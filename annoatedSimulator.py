@@ -1,7 +1,7 @@
 import pdb
 from collections import Counter
 
-import habitat_sim
+#import habitat_sim
 import cv2
 import numpy as np
 
@@ -10,7 +10,7 @@ from utils import *
 
 class AnnotatedSimulator:
 
-    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, show_semantic=False, verbose=False
+    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless = False, show_semantic=False, verbose=False
                  ):
 
         self.verbose = verbose
@@ -24,8 +24,10 @@ class AnnotatedSimulator:
         }
         self.RESOLUTION = resolution
         self.show_semantic = show_semantic
-        cv2.namedWindow("RGB View", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("RGB View", self.RESOLUTION[1], self.RESOLUTION[0])
+        self.headless =headless
+        if not self.headless:
+            cv2.namedWindow("RGB View", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("RGB View", self.RESOLUTION[1], self.RESOLUTION[0])
 
         if show_semantic:
             cv2.namedWindow("Semantic View", cv2.WINDOW_NORMAL)
@@ -120,6 +122,7 @@ class AnnotatedSimulator:
         cv2.putText(img, label, (text_x, text_y), font, font_scale, font_color, font_thickness)
 
     def run_user_input(self):
+        assert not self.headless
         while True:
             if self.steps > 0:
                 key = cv2.waitKey(0)
@@ -163,8 +166,8 @@ class AnnotatedSimulator:
                     f"[Notable Objects] Object ID: {obj.semantic_id}, Category: {obj.category.name()}, "
                     f"local coords: {local_coords}")
             self.annotate_image(rgb_image, obj_wrapped)
-
-        cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+        if not self.headless:
+            cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
 
         if self.show_semantic:
             sem_image_visual = (sem_image % 40) * 255 / 40  # Scale semantic labels to visible range

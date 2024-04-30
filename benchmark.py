@@ -4,20 +4,22 @@ from collections import Counter
 
 import numpy as np
 
-import habitat_sim
+#import habitat_sim
 import cv2
 from utils import *
 from vlmAgent import VLMAgent
 from annoatedSimulator import AnnotatedSimulator
+import ast
 
 
 class SpatialBenchmark:
 
-    def __init__(self, sim_kwargs, vlm_kwargs):
+    def __init__(self, sim_kwargs, vlm_agent):
 
         self.annotatedSimulator = AnnotatedSimulator(**sim_kwargs)
-        self.vlmAgent = VLMAgent(**vlm_kwargs)
+        self.vlmAgent = vlm_agent
         self.score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 0}
+        self.headless = sim_kwargs['headless']
 
     def evaluate_vlm(self, context, num_samples, num_objects):
 
@@ -39,15 +41,15 @@ class SpatialBenchmark:
                 labels.append(self.parse_diff_vector(obj2['curr_local_coords'], obj1['curr_local_coords']))
                 prompt += f"\n\t{len(labels)}.) Where is the {obj2['obj'].category.name()} in relation to the {obj1['obj'].category.name()}?"
 
-        prompt += ("\nReason through the task, analyze the 3d layout of the image you see, and at the very end output "
-                   "'ANSWER' followed by a json object in the following example format:"
-                   "\n{1: ['right', 'above', 'neutral'], 2: ['left', 'neutral', 'in front']}\nDo not generate any "
-                   "images, respond purely in text")
+        prompt += ("\nReason through the task and describe the 3d layout of the image you see, and at the very end of your response, output "
+                   "a json object in the following example format:"
+                   f"\n{1: ['right', 'above', 'neutral'], 2: ['left', 'neutral', 'in front']} Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n")
 
         print(prompt)
         print(labels)
-        # predictions = self.parse_response(self.vlmAgent.call(image, prompt, num_samples), num_samples)
-        predictions = self.vlmAgent.call(image, prompt, num_samples)
+        response, performance = self.vlmAgent.call(image, prompt, num_samples)
+        predictions = self.parse_response(response)
+        #predictions = self.vlmAgent.call(image, prompt, num_samples)
         #print(predictions, labels, prompt)
         score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 0}
         for i in range(num_samples):
@@ -87,18 +89,14 @@ class SpatialBenchmark:
             answer.append('neutral')
         return answer
 
-    def parse_response(self, response, num_samples):
-        predictions = []
-        for i in range(num_samples):
-            pred = set()
-            for kw in ['right', 'left', 'above', 'below', 'in front', 'behind']:
-                if kw in response[i]:
-                    pred.add(kw)
-            predictions.append(pred)
-        return predictions
+    def parse_response(self, response):
 
-    def run(self, num_objects=4, num_samples=3):
-        while True:
+        response_dict = ast.literal_eval(response[response.rindex('{'):response.rindex('}')+1])
+
+        return response_dict
+
+    def run(self, num_objects=4, num_samples=3, num_iterations=100):
+        for iter in num_iterations:
             if self.annotatedSimulator.steps > 0:
                 action = self.select_action()
             else:
@@ -108,7 +106,7 @@ class SpatialBenchmark:
 
             context = self.annotatedSimulator.step(action, num_objects=num_objects)
             if len(context['annotations']) == num_objects:
-
+                        
                 score = self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)
                 for k, v in score.items():
                     self.score[k] += v
@@ -121,6 +119,8 @@ class SpatialBenchmark:
         cv2.destroyAllWindows()
 
     def select_action(self):
+        if self.headless:
+            return 'random_sample'
         key = cv2.waitKey(0)
         if key == ord("p"):
             pdb.set_trace()
@@ -133,6 +133,11 @@ if __name__ == '__main__':
 
     sim_kwargs = {'scene_path': '../habitat-sim/data/scene_datasets/hm3d/minival/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb',
                   'scene_config': "../habitat-sim/data/scene_datasets/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
-                  'resolution': (1080, 1920)}
-    benchmark = SpatialBenchmark(sim_kwargs, {})
-    benchmark.run(num_objects=5, num_samples=4)
+                  'resolution': (1080, 1920), 'headless': True}
+    
+    vlm_kwargs = {}
+
+    vlm_agent = VLMAgent(**vlm_kwargs)
+
+    benchmark = SpatialBenchmark(sim_kwargs, vlm_agent)
+    benchmark.run(num_objects=2, num_samples=1, num_iterations = 100)

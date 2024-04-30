@@ -3,13 +3,15 @@ from collections import Counter
 
 import numpy as np
 
-import habitat_sim
+#import habitat_sim
 import cv2
 from utils import *
 
 
 class VLMAgent:
-
+    """
+    Trivial agent for testing
+    """
     def __init__(self, **kwargs):
         pass
 
