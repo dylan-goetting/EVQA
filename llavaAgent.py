@@ -4,10 +4,11 @@ import os
 import pdb
 import torch
 import time
-#import habitat_sim
+import habitat_sim
 import cv2
 from collections import Counter
 from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, BitsAndBytesConfig
+
 from PIL import Image
 from utils import *
 from vlmAgent import VLMAgent
@@ -29,7 +30,8 @@ class LLaVaAgent(VLMAgent):
             )
             model_kwargs['quantization_config'] = quantization_config
 
-        if os.path.exists(f'./{self.name}'):
+        if os.path.exists(f'{self.name}'):
+            print('model loading weights from file')
             model_kwargs['pretrained_model_name_or_path'] = f'{self.name}/model_weights'
             processor_path = f'{self.name}/processor_weights'
         else:
@@ -49,6 +51,8 @@ class LLaVaAgent(VLMAgent):
         else:
             text_prompt = f"[INST] <image>\n{text_prompt} [/INST]"
         
+        if visual_prompt.shape[-1] == 4:
+            visual_prompt = visual_prompt[:, :, 0:3]
         image = Image.fromarray(visual_prompt, mode='RGB') 
 
         inputs = self.processor(text_prompt, image, return_tensors="pt").to(self.model.device)
@@ -59,8 +63,7 @@ class LLaVaAgent(VLMAgent):
         duration = time.time() - t
         print(f'{self.name} finished inference, took {duration} seconds')
         tokens_generated = output.shape[1]-input_tokens
-        efficiency = tokens_generated/duration
 
         output_text = self.processor.decode(output[0][input_tokens:], skip_special_tokens=True)
         
-        return output_text, efficiency
+        return output_text, {'tokens_generated': tokens_generated, 'duration': duration}

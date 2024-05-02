@@ -1,7 +1,7 @@
 import pdb
 from collections import Counter
 
-#import habitat_sim
+import habitat_sim
 import cv2
 import numpy as np
 
@@ -140,7 +140,8 @@ class AnnotatedSimulator:
         cv2.destroyAllWindows()
 
     def step(self, action, num_objects=4):
-
+        if action == 'random_sample':
+            action = 'move_forward'
         observations = self.sim.step(action)
 
         agent_state = self.sim.get_agent(0).get_state()

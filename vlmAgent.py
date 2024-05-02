@@ -2,8 +2,6 @@ import pdb
 from collections import Counter
 
 import numpy as np
-
-#import habitat_sim
 import cv2
 from utils import *
 
