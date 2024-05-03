@@ -1,9 +1,12 @@
 import pdb
 from collections import Counter
+from random import shuffle
 
+from habitat_sim.utils.common import quat_from_angle_axis
 import habitat_sim
 import cv2
 import numpy as np
+import magnum as mn
 
 from utils import *
 
@@ -20,7 +23,8 @@ class AnnotatedSimulator:
             ord('w'): "move_forward",
             ord('a'): "turn_left",
             ord('d'): "turn_right",
-            ord('q'): "stop"
+            ord('q'): "stop",
+            ord('r'): "random"
         }
         self.RESOLUTION = resolution
         self.show_semantic = show_semantic
@@ -36,6 +40,7 @@ class AnnotatedSimulator:
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
+        backend_cfg.enable_physics = True
         sem_cfg = habitat_sim.CameraSensorSpec()
         sem_cfg.uuid = "semantic"
         sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
@@ -59,11 +64,13 @@ class AnnotatedSimulator:
     def filter_objects(self, sem_image, sensor_state, max_objects=5):
         obj_ids = Counter(sem_image.flatten())
         objects = [self.sim.semantic_scene.objects[i] for i in obj_ids.keys()]
+        shuffle(objects)
         filtered = []
         bad_categories = ['floor', 'wall', 'ceiling', 'Unknown', 'unknown', 'surface']
         counted_categories = Counter([a.category for a in objects])
 
         for obj in objects:
+
             if len(filtered) == max_objects:
                 break
             if obj.category.name() in bad_categories:
@@ -71,23 +78,37 @@ class AnnotatedSimulator:
             if counted_categories[obj.category] > 1:
                 continue
             if obj_ids[obj.semantic_id] < 5:
+                print('skipping', obj.category.name(), obj_ids[obj.semantic_id])
                 continue
             local_pt = global_to_local(sensor_state.position, sensor_state.rotation, obj.aabb.center)
             x_p, y_p = self.project_2d(local_pt)
-            if x_p < 0.25 * self.RESOLUTION[1] or x_p > 0.75 * self.RESOLUTION[1]:
+
+            if x_p < 0.15 * self.RESOLUTION[1] or x_p > 0.85 * self.RESOLUTION[1]:
                 continue
-            if y_p < 0.15 * self.RESOLUTION[0] or y_p > 0.85 * self.RESOLUTION[0]:
+            if y_p < 0.05 * self.RESOLUTION[0] or y_p > 0.95 * self.RESOLUTION[0]:
                 continue
-            if len(filtered) == 0:
-                filtered.append([obj, (x_p, y_p)])
-            else:
-                valid = True
+            valid = True
+            if len(filtered) > 0:
                 for _, (xp, yp) in filtered:
-                    if abs(xp - x_p) < 125 and abs(yp - y_p) < 50:
+                    if abs(xp - x_p) < 100 and abs(yp - y_p) < 30:
                         valid = False
                         break
-                if valid:
-                    filtered.append([obj, (x_p, y_p)])
+            if not valid:
+                continue
+
+            ray = habitat_sim.geo.Ray(sensor_state.position, obj.aabb.center - sensor_state.position)
+            max_distance = 100.0  # Set a max distance for the ray
+            raycast_results = self.sim.cast_ray(ray, max_distance)
+            if raycast_results.has_hits():
+                distance = np.linalg.norm(global_to_local(sensor_state.position, sensor_state.rotation, raycast_results.hits[0].point))
+                com_distance = np.linalg.norm(local_pt)
+                error = abs(distance-com_distance)/distance
+                if error > 0.15:
+                    continue
+                #print(f'raytesting to {obj.category.name()}, hit {self.sim.semantic_scene.objects[raycast_results.hits[0].object_id].category.name()}, point {}, local coords are {local_pt}')
+                #print(f"[Ray testing]: object {obj.category.name()}, ray distance: {distance}, com distance: {com_distance}, error: {error}")
+
+            filtered.append([obj, (x_p, y_p)])
 
         return filtered
 
@@ -107,8 +128,8 @@ class AnnotatedSimulator:
         label = f'{obj_wrapped["obj"].category.name()}'
         # Assuming you have an image captured from the sensor
         cv2.circle(img, (x_pixel, y_pixel), 4, (255, 0, 0), -1)
-        font = cv2.QT_FONT_NORMAL
-        font_scale = 0.75
+        font = cv2.FONT_HERSHEY_DUPLEX
+        font_scale = 0.85
         font_color = (0, 0, 0)
         font_thickness = 1
         text_size, baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
@@ -140,9 +161,19 @@ class AnnotatedSimulator:
         cv2.destroyAllWindows()
 
     def step(self, action, num_objects=4):
-        if action == 'random_sample':
-            action = 'move_forward'
-        observations = self.sim.step(action)
+        if action == 'r':
+
+            random_point = self.sim.pathfinder.get_random_navigable_point()
+            random_yaw = np.random.uniform(0, 2 * np.pi)
+            random_orientation = quat_from_angle_axis(random_yaw, np.array([0, 1, 0]))
+            agent_state = habitat_sim.AgentState()
+            agent_state.position = random_point
+            agent_state.rotation = random_orientation
+            self.sim.get_agent(0).set_state(agent_state)
+            observations = self.sim.get_sensor_observations()
+    
+        else:
+            observations = self.sim.step(action)
 
         agent_state = self.sim.get_agent(0).get_state()
 
@@ -152,9 +183,8 @@ class AnnotatedSimulator:
         if self.verbose:
             print("Agent position:", agent_state.position)
             # print("Agent rotation:", agent_state.rotation)
-        if self.steps % 3 == 0:
-            self.filtered_objects = self.filter_objects(sem_image, agent_state.sensor_states['color_sensor'],
-                                                   max_objects=num_objects)
+        self.filtered_objects = self.filter_objects(sem_image, agent_state.sensor_states['color_sensor'],
+                                            max_objects=num_objects)
         out = {'annotations': [], 'agent_state': agent_state}
         for obj, _ in self.filtered_objects:
             local_coords = np.round(global_to_local(agent_state.sensor_states['color_sensor'].position,

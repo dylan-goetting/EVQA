@@ -61,8 +61,8 @@ class LLaVaAgent(VLMAgent):
         input_tokens = inputs['input_ids'].shape[1]
         output = self.model.generate(**inputs, max_new_tokens=1000)
         duration = time.time() - t
-        print(f'{self.name} finished inference, took {duration} seconds')
         tokens_generated = output.shape[1]-input_tokens
+        print(f'{self.name} finished inference, took {duration} seconds, speed of {tokens_generated/duration} t/s')
 
         output_text = self.processor.decode(output[0][input_tokens:], skip_special_tokens=True)
         

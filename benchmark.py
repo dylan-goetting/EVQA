@@ -23,7 +23,7 @@ class SpatialBenchmark:
 
         self.annotatedSimulator = AnnotatedSimulator(**sim_kwargs)
         self.vlmAgent = vlm_agent
-        self.score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 0, 'accuracies': []}
+        self.score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 1e-10, 'accuracies': []}
 
         self.vlm_errors = 0
         self.iterations = 0
@@ -34,7 +34,6 @@ class SpatialBenchmark:
 
     def evaluate_vlm(self, context, num_samples, num_objects):
 
-        #agent_state = context['agent_state']
         obj_wrappers = context['annotations']
         image = context['image']
         prompt = ("You are a robot navigating within an 3-D environment as shown. In the image you see, there are "
@@ -57,10 +56,7 @@ class SpatialBenchmark:
                    f"\n{{1: ['right', 'above', 'neutral'], 2: ['left', 'neutral', 'in front']}} Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n")
         im_file = Image.fromarray(image[:, :, 0:3])
         im_file.save(f'logs/{self.run_name}/iter{self.iterations}/image_prompt.png')
-        
-        
-        #print(prompt)
-        #print(labels)
+
         response, performance = self.vlmAgent.call(image, prompt, num_samples)
         predictions = self.parse_response(response)
         
@@ -79,11 +75,11 @@ class SpatialBenchmark:
                         score[axis] += 1
                         score['total_pts'] += 1
                     score['possible_pts'] += 1
-                    return score, performance
+            return score, performance
 
         except KeyError:
             print("Error parsing VLM response, moving on")
-            return None
+            return 'error', performance
 
 
     def parse_diff_vector(self, obj2, obj1):
@@ -135,21 +131,23 @@ class SpatialBenchmark:
                 if len(context['annotations']) == num_objects:
                     os.mkdir(f'logs/{self.run_name}/iter{self.iterations}')
 
-                    score = self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)
+                    score, perf = self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)
                     self.iterations += 1
-                    if score is None:
+                    if score == 'error':
                         self.vlm_errors += 1
                     else:    
-                        for k, v in score[0].items():
+                        for k, v in score.items():
                             self.score[k] += v
-
-                    self.efficienty['tokens_generated'].append(score[1]['tokens_generated'])
-                    self.efficienty['durations'].append(score[1]['duration'])
+                        self.score['accuracies'].append(score['total_pts']/score['possible_pts'])
+                    self.efficienty['tokens_generated'].append(perf['tokens_generated'])
+                    self.efficienty['durations'].append(perf['duration'])
 
                     self.writer.add_scalar('response error rate', self.vlm_errors/self.iterations, self.iterations)
                     self.writer.add_scalar('cum accuracy', self.score['total_pts']/self.score['possible_pts'], self.iterations)
                     self.writer.add_scalar('cum efficiency', sum(self.efficienty['tokens_generated'])/sum(self.efficienty['durations']), self.iterations)
                     break
+                else:
+                    print('sampling another pose, not enough objects')
 
         accs = []
         for axis in ['x_accuracy', 'y_accuracy', 'z_accuracy']:
@@ -157,11 +155,16 @@ class SpatialBenchmark:
             print(axis, self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
         accs.append(self.score['total_pts']/self.score['possible_pts'])
         print('overall accuracy', self.score['total_pts']/self.score['possible_pts'])
-        self.writer.add_histogram('accuracy distribution', np.array(self.score['accuracies']), 'auto', max_bins=10)
-        self.writer.add_histogram('tokens_generated distribution', np.array(self.efficienty['tokens_generated']), 'auto', max_bins=10)
-        self.writer.add_histogram('speed distribution', np.array(self.efficienty['durations']), 'auto', max_bins=10)
-        self.writer.add_figure("Final Accuracies", plt.bar(['x_accuracy', 'y_accuracy', 'z_accuracy', 'overall_accuracy'], accs))
+        self.writer.add_histogram('accuracy distribution', np.array(self.score['accuracies']), bins='auto', max_bins=10)
+        self.writer.add_histogram('tokens_generated distribution', np.array(self.efficienty['tokens_generated']), bins='auto', max_bins=10)
+        self.writer.add_histogram('speed distribution', np.array(self.efficienty['durations']), bins='auto', max_bins=10)
 
+        fig, ax = plt.subplots()
+        ax.bar(['x_accuracy', 'y_accuracy', 'z_accuracy', 'overall_accuracy'], accs)
+        ax.set_ylabel('Accuracy')
+        ax.set_title('Final Accuracies')
+
+        self.writer.add_figure("Final Accuracies", fig)
         self.annotatedSimulator.sim.close()
         cv2.destroyAllWindows()
         self.writer.close()
@@ -169,7 +172,7 @@ class SpatialBenchmark:
 
     def select_action(self):
         if self.headless:
-            return 'turn_right'
+            return 'r'
         key = cv2.waitKey(0)
         if key == ord("p"):
             pdb.set_trace()
@@ -189,4 +192,4 @@ if __name__ == '__main__':
     vlm_agent = LLaVaAgent(**vlm_kwargs)
 
     benchmark = SpatialBenchmark(sim_kwargs, vlm_agent)
-    benchmark.run(num_objects=2, num_samples=1, num_iterations = 5)
+    benchmark.run(num_objects=3, num_samples=2, num_iterations = 10)
