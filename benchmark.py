@@ -48,6 +48,7 @@ class SpatialBenchmark:
         while len(labels) < num_samples:
             obj1, obj2 = random.sample(obj_wrappers, 2)
             if (obj2['obj'], obj1['obj']) not in ht and (obj1['obj'], obj2['obj']) not in ht:
+                ht.add((obj1['obj'], obj2['obj']))
                 labels.append(self.parse_diff_vector(obj2['curr_local_coords'], obj1['curr_local_coords']))
                 prompt += f"\n\t{len(labels)}.) Where is the {obj2['obj'].category.name()} in relation to the {obj1['obj'].category.name()}?"
 
@@ -66,12 +67,15 @@ class SpatialBenchmark:
             file.write(f'[MODEL OUTPUT]\n{response}\n\n')
             file.write(f'[PERFORMANCE]\n{performance}')
         
-        #print(predictions, labels, prompt)
         try:
             score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 0}
             for i in range(num_samples):
                 for j, axis in enumerate(['x_pts', 'y_pts', 'z_pts']):
-                    if labels[i][j] == predictions[i+1][j]:
+                    if i+1 in predictions:
+                        key = i+1
+                    else:
+                        key = str(i+1)
+                    if labels[i][j] == predictions[key][j]:
                         score[axis] += 1
                         score['total_pts'] += 1
                     score['possible_pts'] += 1
@@ -86,9 +90,9 @@ class SpatialBenchmark:
         diff_vector = obj2 - obj1
         theta_x = np.rad2deg(np.arctan(obj1[0]/obj1[2])- np.arctan(obj2[0]/obj2[2]))
         answer = []
-        if theta_x > 10:
+        if theta_x > 5:
             answer.append('right')
-        elif theta_x < -10:
+        elif theta_x < -5:
             answer.append('left')
         else:
             answer.append('neutral')
@@ -102,9 +106,9 @@ class SpatialBenchmark:
             answer.append('neutral')
 
         ratio_z = diff_vector[2]/min(obj2[2], obj1[2])
-        if ratio_z > 0.1:
+        if ratio_z > 0.05:
             answer.append('behind')
-        elif ratio_z < -0.1:
+        elif ratio_z < -0.05:
             answer.append('in front')
         else:
             answer.append('neutral')
@@ -192,4 +196,4 @@ if __name__ == '__main__':
     vlm_agent = LLaVaAgent(**vlm_kwargs)
 
     benchmark = SpatialBenchmark(sim_kwargs, vlm_agent)
-    benchmark.run(num_objects=3, num_samples=2, num_iterations = 10)
+    benchmark.run(num_objects=2, num_samples=1, num_iterations = 200)
