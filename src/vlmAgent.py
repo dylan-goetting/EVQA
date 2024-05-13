@@ -3,7 +3,7 @@ from collections import Counter
 
 import numpy as np
 import cv2
-from utils import *
+from src.utils import *
 
 
 class VLMAgent:

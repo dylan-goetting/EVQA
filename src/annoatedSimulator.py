@@ -8,12 +8,12 @@ import cv2
 import numpy as np
 import magnum as mn
 
-from utils import *
+from src.utils import *
 
 
 class AnnotatedSimulator:
 
-    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless = False, show_semantic=False, verbose=False
+    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, verbose=False
                  ):
 
         self.verbose = verbose
@@ -125,7 +125,7 @@ class AnnotatedSimulator:
 
     def annotate_image(self, img, obj_wrapped):
         x_pixel, y_pixel = self.project_2d(obj_wrapped['curr_local_coords'])
-        label = f'{obj_wrapped["obj"].category.name()}'
+        label = f'{obj_wrapped["obj"]}'
         # Assuming you have an image captured from the sensor
         cv2.circle(img, (x_pixel, y_pixel), 4, (255, 0, 0), -1)
         font = cv2.FONT_HERSHEY_DUPLEX
@@ -160,7 +160,7 @@ class AnnotatedSimulator:
         self.sim.close()
         cv2.destroyAllWindows()
 
-    def step(self, action, num_objects=4):
+    def step(self, action, num_objects=4, annotate_image=False):
         if action == 'r':
 
             random_point = self.sim.pathfinder.get_random_navigable_point()
@@ -190,13 +190,14 @@ class AnnotatedSimulator:
             local_coords = np.round(global_to_local(agent_state.sensor_states['color_sensor'].position,
                                                     agent_state.sensor_states['color_sensor'].rotation,
                                                     obj.aabb.center), 3)
-            obj_wrapped = {'obj': obj, 'curr_local_coords': local_coords}
+            obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords}
             out['annotations'].append(obj_wrapped)
             if self.verbose:
                 print(
                     f"[Notable Objects] Object ID: {obj.semantic_id}, Category: {obj.category.name()}, "
                     f"local coords: {local_coords}")
-            self.annotate_image(rgb_image, obj_wrapped)
+            if annotate_image:
+                self.annotate_image(rgb_image, obj_wrapped)
         if not self.headless:
             cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
 

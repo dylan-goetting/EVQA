@@ -1,0 +1,13 @@
+    headless: True
+    offline: True
+    resolution:
+    - 1080 
+    - 1920
+    num_objects: 3
+    num_samples: 2
+    num_iterations: 20
+    vlm_cls: LLaVaAgent
+    vlm_kwargs:
+      llm: mistral
+      size: 7b
+    data_path: 'test'

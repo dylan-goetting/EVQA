@@ -10,17 +10,24 @@ from collections import Counter
 from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, BitsAndBytesConfig
 
 from PIL import Image
-from utils import *
-from vlmAgent import VLMAgent
+from src.utils import *
+from src.vlmAgent import VLMAgent
 
 class LLaVaAgent(VLMAgent):
 
-    def __init__(self, llm, size, quantize=True, torch_dtype=torch.float16, low_cpu_mem_usage=True):
+    def __init__(self, *pargs, **kwargs):
+        self.setup_kwargs = kwargs
+        self.setup_pargs = pargs
+        self.is_setup = False
+
+    def setup(self, llm, size, quantize=True, torch_dtype=torch.float16, low_cpu_mem_usage=True):
 
         assert llm in ['vicuna', 'mistral']
         assert size in ['7b', '13b', '34b']
         self.llm = llm
         self.name = f'llava-v1.6-{llm}-{size}-hf'
+
+
         model_kwargs = {}
         if quantize:
             quantization_config = BitsAndBytesConfig(
@@ -45,6 +52,10 @@ class LLaVaAgent(VLMAgent):
     
     
     def call(self, visual_prompt: np.array, text_prompt: str, num_samples):
+        
+        if not self.is_setup:
+            self.setup(*self.setup_pargs, **self.setup_kwargs)
+            self.is_setup=True
 
         if self.llm == 'vicuna':
             text_prompt = f"A chat between a curious human and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the human's questions. USER: <image>\n{text_prompt} ASSISTANT:"
