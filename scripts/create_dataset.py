@@ -15,7 +15,7 @@ if __name__ == '__main__':
     # use argparse to add the args "num_objects, num_samples, num_iterations, headless, offline, "
     parser = argparse.ArgumentParser(description="Create a dataset from sumulator")
     parser.add_argument('name', type=str, help='Name of dataset')
-    parser.add_argument('--scene_id', type=int, help='number of scene', default=800)
+    parser.add_argument('--scene_ids', type=int, nargs='*', help='list of scene IDs', default=[800])
     parser.add_argument('--headless', type=bool, default=True)
     parser.add_argument('--resolution', type=list, help='camera resolution', default=(1080, 1920))
     parser.add_argument('--fov', type=int, help='fov of camera', default=90)
@@ -25,26 +25,30 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     files = os.listdir('scenes/hm3d/minival/')
-    scene_paths = 'scenes/hm3d/minival/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb'
+    scene_paths = []
+    simulators = []
+
     for f in files:
         try:
-            if int(f[2:5]) == args.scene_id:
+            if int(f[2:5]) in args.scene_ids:
                 hsh = f[6:] 
-                scene_path = f'scenes/hm3d/minival/00{args.scene_id}-{hsh}/{hsh}.basis.glb'
+                sim_kwargs = {'scene_path': f'scenes/hm3d/minival/00{f[2:5]}-{hsh}/{hsh}.basis.glb',
+                            'scene_config': "scenes/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
+                            'resolution': args.resolution, 'headless': args.headless, 'fov': args.fov}
+                s = AnnotatedSimulator(**sim_kwargs)
+                s.scene_id = f[2:5]
+                simulators.append(s)
+
         except:
             continue
+    
 
-
-    sim_kwargs = {'scene_path': scene_path,
-                  'scene_config': "scenes/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
-                  'resolution': args.resolution, 'headless': args.headless, 'fov': args.fov}
-    # pdb.set_trace()
-    asim = AnnotatedSimulator(**sim_kwargs)
     custom_dtype = np.dtype([
         ('image', np.float32, (args.resolution[0], args.resolution[1], 4)),
-        ('metadata', 'S5000'),  # JSON string, up to 1000 bytes
+        ('annotations', 'S5000'),  # JSON string, up to 1000 bytes
         ('fov', int),
-        ('label', int)
+        ('label', int),
+        ('scene_id', 'S100')
     ])
     with h5py.File(f'annotated_datasets/{args.name}.hdf5', 'w') as f:
     # Create a group for images
@@ -52,8 +56,9 @@ if __name__ == '__main__':
         dataset = f.create_dataset("data", shape=(args.size,), dtype=custom_dtype)   
 
         for iter in range(args.size):
+            sim = random.sample(simulators, 1)[0]
             while True:
-                out = asim.step('r', num_objects=args.max_objects, annotate_image=False)
+                out = sim.step('r', num_objects=args.max_objects, annotate_image=False)
                 if len(out['annotations']) == args.max_objects:
                     break
             image = out['image']
@@ -62,32 +67,9 @@ if __name__ == '__main__':
             json_mdata = pickle.dumps(mdata)
             item = np.zeros((), dtype=custom_dtype)
             item['image'] = image_float
-            item['metadata'] = json_mdata
+            item['annotations'] = json_mdata
             item['label'] = iter
             item['fov'] = args.fov
+            item['scene_id'] = sim.scene_id
             dataset[iter] = item
-
-
-
-    file_path = f'annotated_datasets/{args.name}.hdf5'
-
-    # Open the HDF5 file in read mode
-    with h5py.File(file_path, 'r') as f:
-        # Access the dataset
-        dataset = f[args.name]
-
-        # Iterate over the dataset
-        for i in range(len(dataset)):
-            # Read the image data
-            image_data = dataset[i]['image']
-            # Deserialize the metadata
-            metadata = pickle.loads(dataset[i]['metadata'])
-
-            # Read the label
-            label = dataset[i]['label']
-
-            # Process the data (for demonstration, just print some info)
-            print(f"Entry {i}:")
-            print(f"Label: {label}")
-            print(f"Metadata: {metadata}")
-            print(f"Image shape: {image_data.shape}")
+            print(f'iter: {iter}')

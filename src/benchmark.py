@@ -76,14 +76,15 @@ class SpatialBenchmark:
 
         response, performance = self.vlmAgent.call(image, prompt, num_samples)
         predictions = self.parse_response(response)
-        
-        im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
-        im_file.save(f'logs/{self.run_name}/iter{self.iterations}/image_prompt.png')
-        with open(f'logs/{self.run_name}/iter{self.iterations}/details.txt', 'w') as file:
-            file.write(f'[PROMPT]\n{prompt}\n\n')
-            file.write(f'[GROUND TRUTH]\n{labels}\n\n')
-            file.write(f'[MODEL OUTPUT]\n{response}\n\n')
-            file.write(f'[PERFORMANCE]\n{performance}')
+        if self.iterations % 10 == 0:
+            os.mkdir(f'logs/{self.run_name}/iter{self.iterations}')
+            im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
+            im_file.save(f'logs/{self.run_name}/iter{self.iterations}/image_prompt.png')
+            with open(f'logs/{self.run_name}/iter{self.iterations}/details.txt', 'w') as file:
+                file.write(f'[PROMPT]\n{prompt}\n\n')
+                file.write(f'[GROUND TRUTH]\n{labels}\n\n')
+                file.write(f'[MODEL OUTPUT]\n{response}\n\n')
+                file.write(f'[PERFORMANCE]\n{performance}')
         
         row = { 'x_pts': 0, 'x_pts_weighted': 0, 'x_possible_pts_weighted':weights[:, 0].sum(),
                 'y_pts':0, 'y_pts_weighted': 0, 'y_possible_pts_weighted':weights[:, 1].sum(), 
@@ -160,7 +161,7 @@ class SpatialBenchmark:
                 
                 if self.offline:
                     item = self.dataset[iter]
-                    annotations = pickle.loads(item['metadata'])
+                    annotations = pickle.loads(item['annotations'])
                     image = item['image']
                     for i in range(num_objects):
                         image = annotate_image_offline(annotations[i], image, item['fov']) 
@@ -181,33 +182,33 @@ class SpatialBenchmark:
                         else:
                             print('sampling another pose, not enough objects')
 
-                os.mkdir(f'logs/{self.run_name}/iter{self.iterations}')
-
-                self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)    
+                self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)
+                
                 self.iterations += 1
 
         finally:
             print('closing file')
             self.data_file.close()
+        self.visualize_results(self.df)
+        # accs = []
+        # pdb.set_trace()
+        # for axis in ['x_accuracy', 'y_accuracy', 'z_accuracy']:
+        #     accs.append(self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
+        #     print(axis, self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
+        # accs.append(self.score['total_pts']/self.score['possible_pts'])
+        # print('overall accuracy', self.score['total_pts']/self.score['possible_pts'])
+        # self.writer.add_histogram('accuracy distribution', np.array(self.score['accuracies']), bins='auto', max_bins=10)
+        # self.writer.add_histogram('tokens_generated distribution', np.array(self.efficienty['tokens_generated']), bins='auto', max_bins=10)
+        # self.writer.add_histogram('speed distribution', np.array(self.efficienty['durations']), bins='auto', max_bins=10)
 
-        accs = []
-        pdb.set_trace()
-        for axis in ['x_accuracy', 'y_accuracy', 'z_accuracy']:
-            accs.append(self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
-            print(axis, self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
-        accs.append(self.score['total_pts']/self.score['possible_pts'])
-        print('overall accuracy', self.score['total_pts']/self.score['possible_pts'])
-        self.writer.add_histogram('accuracy distribution', np.array(self.score['accuracies']), bins='auto', max_bins=10)
-        self.writer.add_histogram('tokens_generated distribution', np.array(self.efficienty['tokens_generated']), bins='auto', max_bins=10)
-        self.writer.add_histogram('speed distribution', np.array(self.efficienty['durations']), bins='auto', max_bins=10)
+        # fig, ax = plt.subplots()
+        # ax.bar(['x_accuracy', 'y_accuracy', 'z_accuracy', 'overall_accuracy'], accs)
+        # ax.set_ylabel('Accuracy')
+        # ax.set_title('Final Accuracies')
 
-        fig, ax = plt.subplots()
-        ax.bar(['x_accuracy', 'y_accuracy', 'z_accuracy', 'overall_accuracy'], accs)
-        ax.set_ylabel('Accuracy')
-        ax.set_title('Final Accuracies')
-
-        self.writer.add_figure("Final Accuracies", fig)
-        self.annotatedSimulator.sim.close()
+        # self.writer.add_figure("Final Accuracies", fig)
+        if not self.headless:
+            self.annotatedSimulator.sim.close()
         cv2.destroyAllWindows()
         self.writer.close()
         print('\nComplete')
@@ -223,3 +224,42 @@ class SpatialBenchmark:
         return action
 
     def visualize_results(self, df):
+        plt.figure(figsize=(10, 6))
+        plt.scatter(df['accuracy_weighted'], df['tokens_generated'], alpha=0.5)
+        plt.xlabel('Weighted Accuracy')
+        plt.ylabel('Tokens Generated')
+        plt.title('Weighted Accuracy vs Tokens Generated')
+        plt.savefig(f'logs/{self.run_name}/accuracy_vs_tokens_scatter.png')
+        plt.close()
+
+        plt.figure(figsize=(10, 6))
+        plt.hist(df['tokens_generated'], bins=20, color='blue', alpha=0.7)
+        plt.xlabel('Tokens Generated')
+        plt.ylabel('Frequency')
+        plt.title('Distribution of Tokens Generated')
+        plt.savefig(f'logs/{self.run_name}/tokens_generated_histogram.png')
+        plt.close()
+
+        plt.figure(figsize=(10, 6))
+        plt.hist(df['speed'], bins=20, color='green', alpha=0.7)
+        plt.xlabel('Speed')
+        plt.ylabel('Frequency')
+        plt.title('Distribution of Speed')
+        plt.savefig(f'logs/{self.run_name}/speed_histogram.png')
+        plt.close()
+
+        df['x_weighted_accuracy'] = df['x_pts_weighted'] / df['x_possible_pts_weighted']
+        df['y_weighted_accuracy'] = df['y_pts_weighted'] / df['y_possible_pts_weighted']
+        df['z_weighted_accuracy'] = df['z_pts_weighted'] / df['z_possible_pts_weighted']
+        df['overall_weighted_accuracy'] = (df['x_pts_weighted'] + df['y_pts_weighted'] + df['z_pts_weighted']) / (df['x_possible_pts_weighted'] + df['y_possible_pts_weighted'] + df['z_possible_pts_weighted'])
+        
+        labels = ['x_weighted_accuracy', 'y_weighted_accuracy', 'z_weighted_accuracy', 'overall_weighted_accuracy']
+        values = [df['x_weighted_accuracy'].mean(), df['y_weighted_accuracy'].mean(), df['z_weighted_accuracy'].mean(), df['overall_weighted_accuracy'].mean()]
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(labels, values, color=['blue', 'green', 'red', 'purple'])
+        plt.xlabel('Metrics')
+        plt.ylabel('Weighted Accuracy')
+        plt.title('Weighted Accuracy for x, y, z and Overall')
+        plt.savefig(f'logs/{self.run_name}/weighted_accuracy_bar.png')
+        plt.close()

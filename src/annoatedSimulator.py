@@ -36,7 +36,7 @@ class AnnotatedSimulator:
         if show_semantic:
             cv2.namedWindow("Semantic View", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Semantic View", self.RESOLUTION[1], self.RESOLUTION[0])
-
+        self.scene_id = None
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
@@ -78,7 +78,6 @@ class AnnotatedSimulator:
             if counted_categories[obj.category] > 1:
                 continue
             if obj_ids[obj.semantic_id] < 5:
-                print('skipping', obj.category.name(), obj_ids[obj.semantic_id])
                 continue
             local_pt = global_to_local(sensor_state.position, sensor_state.rotation, obj.aabb.center)
             x_p, y_p = self.project_2d(local_pt)
