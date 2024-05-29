@@ -44,7 +44,7 @@ if __name__ == '__main__':
     
 
     custom_dtype = np.dtype([
-        ('image', np.float32, (args.resolution[0], args.resolution[1], 4)),
+        ('image', np.uint8, (args.resolution[0], args.resolution[1], 4)),
         ('annotations', 'S5000'),  # JSON string, up to 1000 bytes
         ('fov', int),
         ('label', int),
@@ -62,7 +62,7 @@ if __name__ == '__main__':
                 if len(out['annotations']) == args.max_objects:
                     break
             image = out['image']
-            image_float = image.astype('float32')
+            image_float = image.astype('uint8')
             mdata = out['annotations']
             json_mdata = pickle.dumps(mdata)
             item = np.zeros((), dtype=custom_dtype)

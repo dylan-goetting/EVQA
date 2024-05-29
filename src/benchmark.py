@@ -5,18 +5,17 @@ import random
 from matplotlib import pyplot as plt
 import numpy as np
 import datetime
-import habitat_sim
 import cv2
 import ast
 import h5py
 import pandas as pd
 from src.llavaAgent import LLaVaAgent
 from PIL import Image
-from collections import Counter
 from src.utils import *
 from src.vlmAgent import VLMAgent
 from src.annoatedSimulator import AnnotatedSimulator
 from torch.utils.tensorboard import SummaryWriter
+import seaborn as sns
 
 
 class SpatialBenchmark:
@@ -27,39 +26,34 @@ class SpatialBenchmark:
             data_path = f'annotated_datasets/{data_path}.hdf5'
             self.data_file = h5py.File(data_path, 'r')
             self.dataset = self.data_file['data']
-
+            self.headless = True
         else:
             self.annotatedSimulator = AnnotatedSimulator(**sim_kwargs)
             self.headless = sim_kwargs['headless']
 
         self.vlmAgent = vlm_agent
-        self.score = {'x_pts': 0, 'y_pts': 0, 'z_pts': 0, 'total_pts': 0, 'possible_pts': 0, 'x_pts_weighted': 0, 'y_pts_weighted': 0, 'z_pts_weighted': 0,
-                      'total_pts_weighted': 0, 'possible_pts_weighted': 0, 'accuracies': [], 'accuracies_weighted': []}
+
         columns = [
             'x_pts', 'x_pts_weighted', 'x_possible_pts_weighted', 'y_pts', 'y_possible_pts_weighted', 'z_pts', 'z_possible_pts_weighted', 
-            'accuracy', 'accuracy_weighted', 'tokens_generated', 'num_samples', 'num_objects', 'speed'
+            'accuracy', 'accuracy_weighted', 'tokens_generated', 'num_samples', 'num_objects', 'speed', 'scene_id', 'success', 'num_icl'
         ]
         self.df = pd.DataFrame(columns=columns)
         self.vlm_errors = 0
         self.iterations = 0
-        self.efficienty = {'tokens_generated': [], 'durations': []}
         self.run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.writer = SummaryWriter(f'logs/{self.run_name}')
 
-    def evaluate_vlm(self, context, num_samples, num_objects):
-
+    def evaluate_vlm(self, context, num_samples, num_objects, log_freq, num_icl = 0):
         obj_wrappers = context['annotations']
         image = context['image']
-        prompt = ("You are a robot navigating within an 3-D environment as shown. In the image you see, there are "
+        prompt = ("You are a robot navigating within a 3-D environment as shown. In the image you see, there are "
                   f"{num_objects} labeled objects. You will be asked to analyze the spatial position of these labeled "
                   f"objects with relation to each other. The red dots on each object are the object's center of mass, "
                   f"which you should use when comparing the position of two objects. From your point of view, "
-                  f"answer each question with the"
-                  f"descriptors right/left, above/below, in front/behind. If there is no clear spatial difference "
-                  f"along a given axis, you can answer 'neutral'")
+                  f"answer each question with the descriptors right/left, above/below, in front/behind")
         labels = []
         weights = []
         ht = set()
+
         while len(labels) < num_samples:
             obj1, obj2 = random.sample(obj_wrappers, 2)
             if (obj2['obj'], obj1['obj']) not in ht and (obj1['obj'], obj2['obj']) not in ht:
@@ -70,28 +64,39 @@ class SpatialBenchmark:
                 prompt += f"\n\t{len(labels)}.) Where is the {obj2['obj']} in relation to the {obj1['obj']}?"
         weights = np.array(weights, dtype=object)
         assert weights.shape == (num_samples, 3)
-        prompt += ("\nReason through the task and describe the 3d layout of the image you see, and at the very end of your response, output "
+        if num_icl == 0:
+            prompt += ("\nReason through the task and describe the 3d layout of the image you see. Tell me your exact thought process as you examine the objects. At the very end of your response, output "
                    "a json object in the following example format:"
-                   f"\n{{1: ['right', 'above', 'neutral'], 2: ['left', 'neutral', 'in front']}} Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n")
+                   f"\n{{1: ['right', 'above', 'behind'], 2: ['left', 'below', 'in front']]]\n}} Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n")
+        else:
+            prompt += ("\nReason through the task and describe the 3d layout of the image you see. Tell me your exact thought process as you examine the objects. At the very end of your response, output "
+                   "a json object in the following example format:")
+            qs = ""
+            ans = "\n[answer]: \n{"
+            icl = 0
+            while icl < num_icl:
+                obj1, obj2 = random.sample(obj_wrappers, 2)
+                if (obj2['obj'], obj1['obj']) not in ht and (obj1['obj'], obj2['obj']) not in ht:
+                    icl += 1
+                    ht.add((obj1['obj'], obj2['obj']))
+                    l, _ = self.parse_diff_vector(obj2['curr_local_coords'], obj1['curr_local_coords'])
+                    qs += f"\n\t{icl}.) Where is the {obj2['obj']} in relation to the {obj1['obj']}?"
+                    ans += f"{icl}: ['{l[0]}', '{l[1]}', '{l[2]}'], "
+            ans = ans[:-2]
+            ans += f'}}\n Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n'
+            icl_prompt = 'For an example, here is the answer to the following question(s)' + qs + ans
+            ndx = prompt.index('/behind') + 8
+            prompt = prompt[0:ndx] + icl_prompt + prompt[ndx:]
 
         response, performance = self.vlmAgent.call(image, prompt, num_samples)
         predictions = self.parse_response(response)
-        if self.iterations % 10 == 0:
-            os.mkdir(f'logs/{self.run_name}/iter{self.iterations}')
-            im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
-            im_file.save(f'logs/{self.run_name}/iter{self.iterations}/image_prompt.png')
-            with open(f'logs/{self.run_name}/iter{self.iterations}/details.txt', 'w') as file:
-                file.write(f'[PROMPT]\n{prompt}\n\n')
-                file.write(f'[GROUND TRUTH]\n{labels}\n\n')
-                file.write(f'[MODEL OUTPUT]\n{response}\n\n')
-                file.write(f'[PERFORMANCE]\n{performance}')
         
         row = { 'x_pts': 0, 'x_pts_weighted': 0, 'x_possible_pts_weighted':weights[:, 0].sum(),
                 'y_pts':0, 'y_pts_weighted': 0, 'y_possible_pts_weighted':weights[:, 1].sum(), 
                 'z_pts':0, 'z_pts_weighted':0, 'z_possible_pts_weighted':weights[:, 2].sum(),
                 'accuracy':0, 'accuracy_weighted':0, 'tokens_generated':performance['tokens_generated'], 
-                'num_samples':num_samples, 'num_objects':num_objects, 'success': 1,
-                'speed': performance['tokens_generated']/performance['duration']}
+                'num_samples':num_samples, 'num_objects':num_objects, 'success': 1, 'icl': num_icl,
+                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id']}
         try:
             for i in range(num_samples):
                 for j, axis in enumerate(['x_pts', 'y_pts', 'z_pts']):
@@ -105,7 +110,7 @@ class SpatialBenchmark:
             row['accuracy'] = (row['x_pts'] + row['y_pts'] + row['z_pts'])/(num_samples*3)
             row['accuracy_weighted'] = (row['x_pts_weighted'] + row['y_pts_weighted'] + row['z_pts_weighted'])/(weights.sum())
 
-        except KeyError or IndexError as e:
+        except (KeyError, IndexError) as e:
             print(e)
             row['success'] = 0
             print("Error parsing VLM response, moving on")
@@ -113,13 +118,25 @@ class SpatialBenchmark:
         finally:
             row = pd.DataFrame([row])
             self.df= pd.concat([self.df, row], ignore_index=True)
+            if self.iterations % log_freq == 0 or row['success'][0] == 0:
+                path = f'logs/{self.run_name}/iter{self.iterations}'
+                if row['success'][0] == 0:
+                    path += '_ERROR'
+                os.makedirs(path)
+                im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
+                im_file.save(f'{path}/image_prompt.png')
+                with open(f'{path}/details.txt', 'w') as file:
+                    file.write(f'[PROMPT]\n{prompt}\n\n')
+                    file.write(f'[GROUND TRUTH]\n{labels}\n\n')
+                    file.write(f'[MODEL OUTPUT]\n{response}\n\n')
+                    file.write(f'[PERFORMANCE]\n{performance}')
         
 
     def calculate_weights(self, theta_x, theta_y, ratio_z):
 
         weight_x = theta_x**2 / (100 + theta_x**2)
-        weight_y = theta_y**2/ (100 + theta_y**2)
-        weight_z = ratio_z**2/ (0.005 + ratio_z**2)
+        weight_y = theta_y**2/ (75 + theta_y**2)
+        weight_z = ratio_z**2/ (0.001 + ratio_z**2)
 
         return [weight_x, weight_y, weight_z]
 
@@ -151,24 +168,30 @@ class SpatialBenchmark:
     def parse_response(self, response):
         try:
             response_dict = ast.literal_eval(response[response.rindex('{'):response.rindex('}')+1])
-        except ValueError:
+        except (ValueError, SyntaxError):
             response_dict = {}
         return response_dict
 
-    def run(self, num_objects=4, num_samples=3, num_iterations=100):
+    def run(self, objects=4, samples=3, num_iterations=100, log_freq = 10, icl = None):
         try:
             for iter in range(num_iterations):
-                
+                num_objects = random.randint(objects['min'], objects['max'])
+                num_icl = random.randint(icl['min'], icl['max'])
+                max_samples = int(num_objects * (num_objects - 1) / 2) 
+                if num_icl >= max_samples:
+                    num_icl = 0
+                max_samples -= num_icl
+                num_samples = random.randint(samples['min'], min(max_samples, samples['max'] + icl['max']))
                 if self.offline:
                     item = self.dataset[iter]
                     annotations = pickle.loads(item['annotations'])
                     image = item['image']
                     for i in range(num_objects):
                         image = annotate_image_offline(annotations[i], image, item['fov']) 
-                    context = {'image': image, 'annotations': annotations[0:num_objects]}
+                    context = {'image': image, 'annotations': annotations[0:num_objects], 'scene_id': item['scene_id']}
 
                 else:
-                    if self.annotatedSimulator.steps > 0:
+                    if self.annotatedSimulator.steps > 0: 
                         action = self.select_action()
                     else:
                         action = 'move_forward'
@@ -181,36 +204,22 @@ class SpatialBenchmark:
                             break
                         else:
                             print('sampling another pose, not enough objects')
-
-                self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects)
+                self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects, log_freq=log_freq, num_icl=num_icl)
                 
                 self.iterations += 1
 
         finally:
             print('closing file')
             self.data_file.close()
-        self.visualize_results(self.df)
-        # accs = []
-        # pdb.set_trace()
-        # for axis in ['x_accuracy', 'y_accuracy', 'z_accuracy']:
-        #     accs.append(self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
-        #     print(axis, self.score[f'{axis[0]}_pts']*3 / self.score['possible_pts'])
-        # accs.append(self.score['total_pts']/self.score['possible_pts'])
-        # print('overall accuracy', self.score['total_pts']/self.score['possible_pts'])
-        # self.writer.add_histogram('accuracy distribution', np.array(self.score['accuracies']), bins='auto', max_bins=10)
-        # self.writer.add_histogram('tokens_generated distribution', np.array(self.efficienty['tokens_generated']), bins='auto', max_bins=10)
-        # self.writer.add_histogram('speed distribution', np.array(self.efficienty['durations']), bins='auto', max_bins=10)
+        
+        plot_results(self.df, self.run_name)
 
-        # fig, ax = plt.subplots()
-        # ax.bar(['x_accuracy', 'y_accuracy', 'z_accuracy', 'overall_accuracy'], accs)
-        # ax.set_ylabel('Accuracy')
-        # ax.set_title('Final Accuracies')
-
-        # self.writer.add_figure("Final Accuracies", fig)
-        if not self.headless:
+        if not self.offline:
             self.annotatedSimulator.sim.close()
-        cv2.destroyAllWindows()
-        self.writer.close()
+        if not self.headless:
+            cv2.destroyAllWindows()
+
+        pdb.set_trace()
         print('\nComplete')
 
     def select_action(self):
@@ -222,44 +231,3 @@ class SpatialBenchmark:
 
         action = self.annotatedSimulator.action_mapping.get(key, "move_forward")
         return action
-
-    def visualize_results(self, df):
-        plt.figure(figsize=(10, 6))
-        plt.scatter(df['accuracy_weighted'], df['tokens_generated'], alpha=0.5)
-        plt.xlabel('Weighted Accuracy')
-        plt.ylabel('Tokens Generated')
-        plt.title('Weighted Accuracy vs Tokens Generated')
-        plt.savefig(f'logs/{self.run_name}/accuracy_vs_tokens_scatter.png')
-        plt.close()
-
-        plt.figure(figsize=(10, 6))
-        plt.hist(df['tokens_generated'], bins=20, color='blue', alpha=0.7)
-        plt.xlabel('Tokens Generated')
-        plt.ylabel('Frequency')
-        plt.title('Distribution of Tokens Generated')
-        plt.savefig(f'logs/{self.run_name}/tokens_generated_histogram.png')
-        plt.close()
-
-        plt.figure(figsize=(10, 6))
-        plt.hist(df['speed'], bins=20, color='green', alpha=0.7)
-        plt.xlabel('Speed')
-        plt.ylabel('Frequency')
-        plt.title('Distribution of Speed')
-        plt.savefig(f'logs/{self.run_name}/speed_histogram.png')
-        plt.close()
-
-        df['x_weighted_accuracy'] = df['x_pts_weighted'] / df['x_possible_pts_weighted']
-        df['y_weighted_accuracy'] = df['y_pts_weighted'] / df['y_possible_pts_weighted']
-        df['z_weighted_accuracy'] = df['z_pts_weighted'] / df['z_possible_pts_weighted']
-        df['overall_weighted_accuracy'] = (df['x_pts_weighted'] + df['y_pts_weighted'] + df['z_pts_weighted']) / (df['x_possible_pts_weighted'] + df['y_possible_pts_weighted'] + df['z_possible_pts_weighted'])
-        
-        labels = ['x_weighted_accuracy', 'y_weighted_accuracy', 'z_weighted_accuracy', 'overall_weighted_accuracy']
-        values = [df['x_weighted_accuracy'].mean(), df['y_weighted_accuracy'].mean(), df['z_weighted_accuracy'].mean(), df['overall_weighted_accuracy'].mean()]
-
-        plt.figure(figsize=(10, 6))
-        plt.bar(labels, values, color=['blue', 'green', 'red', 'purple'])
-        plt.xlabel('Metrics')
-        plt.ylabel('Weighted Accuracy')
-        plt.title('Weighted Accuracy for x, y, z and Overall')
-        plt.savefig(f'logs/{self.run_name}/weighted_accuracy_bar.png')
-        plt.close()

@@ -2,6 +2,10 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import quaternion
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
 def local_to_global(p, q, local_point):
 
     pass
@@ -50,3 +54,126 @@ def annotate_image_offline(annotation, image, fov):
     cv2.putText(image, label, (text_x, text_y), font, font_scale, font_color, font_thickness)
 
     return image
+
+def plot_results(df, run_name):
+    
+    correlation = df['accuracy_weighted'].corr(df['tokens_generated'])
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['accuracy_weighted'], df['tokens_generated'], alpha=0.5)
+    plt.xlabel('Weighted Accuracy')
+    plt.ylabel('Tokens Generated')
+    plt.title('Weighted Accuracy vs Tokens Generated')
+
+    # Add the correlation label
+    plt.text(0.1, max(df['tokens_generated']) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
+    plt.savefig(f'logs/{run_name}/accuracy_vs_tokens.png')
+    plt.close()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(df['tokens_generated'], bins=20, color='blue', alpha=0.7)
+    plt.xlabel('Tokens Generated')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Tokens Generated')
+    plt.savefig(f'logs/{run_name}/tokens_generated_histogram.png')
+    plt.close()
+
+    plt.figure(figsize=(10, 6))
+    plt.hist(df['speed'], bins=20, color='green', alpha=0.7)
+    plt.xlabel('Speed')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Speed')
+    plt.savefig(f'logs/{run_name}/speed_histogram.png')
+    plt.close()
+
+    df['x_weighted_accuracy'] = df['x_pts_weighted'] / df['x_possible_pts_weighted']
+    df['y_weighted_accuracy'] = df['y_pts_weighted'] / df['y_possible_pts_weighted']
+    df['z_weighted_accuracy'] = df['z_pts_weighted'] / df['z_possible_pts_weighted']
+    df['overall_weighted_accuracy'] = (df['x_pts_weighted'] + df['y_pts_weighted'] + df['z_pts_weighted']) / (df['x_possible_pts_weighted'] + df['y_possible_pts_weighted'] + df['z_possible_pts_weighted'])
+
+    labels = ['x_weighted_accuracy', 'y_weighted_accuracy', 'z_weighted_accuracy', 'overall_weighted_accuracy']
+    values = [
+        df['x_weighted_accuracy'].mean(),
+        df['y_weighted_accuracy'].mean(),
+        df['z_weighted_accuracy'].mean(),
+        df['overall_weighted_accuracy'].mean()
+    ]
+
+    # Calculate the standard deviations
+    errors = [
+        df['x_weighted_accuracy'].std(),
+        df['y_weighted_accuracy'].std(),
+        df['z_weighted_accuracy'].std(),
+        df['overall_weighted_accuracy'].std()
+    ]
+
+    plt.figure(figsize=(10, 6))
+    plt.bar(labels, values, yerr=errors, color=['blue', 'green', 'red', 'purple'], alpha=0.7, capsize=10)
+    plt.xlabel('Metrics')
+    plt.ylabel('Weighted Accuracy')
+    plt.title('Weighted Accuracy for x, y, z and Overall')
+    plt.savefig(f'logs/{run_name}/weighted_accuracy.png')
+    plt.close()
+
+    plt.figure(figsize=(15, 5))
+
+    plt.subplot(1, 3, 1)
+    sns.histplot(df['x_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
+    plt.title('Distribution of x_possible_pts_weighted')
+
+    plt.subplot(1, 3, 2)
+    sns.histplot(df['y_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
+    plt.title('Distribution of y_possible_pts_weighted')
+
+    plt.subplot(1, 3, 3)
+    sns.histplot(df['z_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
+    plt.title('Distribution of z_possible_pts_weighted')
+
+    plt.tight_layout()
+    plt.savefig(f'logs/{run_name}/histograms_possible_pts_weighted.png')
+    plt.close()
+
+    # Heatmap showing the accuracy_weighted across the two axes of num_samples and num_objects
+    heatmap_data = df.pivot_table(index='num_samples', columns='num_objects', values='accuracy_weighted', aggfunc='mean')
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(heatmap_data, annot=True, cmap='viridis', cbar_kws={'label': 'Weighted Accuracy'})
+    plt.title('Heatmap of Weighted Accuracy')
+    plt.savefig(f'logs/{run_name}/heatmap_accuracy_weighted.png')
+    plt.close()
+
+    # Error rate plot where success (0 means error)
+    error_rate = 1 - df['success'].mean()
+
+    plt.figure(figsize=(6, 4))
+    sns.barplot(x=['Error Rate'], y=[error_rate])
+    plt.title('Error Rate')
+    plt.ylim(0, 1)
+    plt.savefig(f'logs/{run_name}/error_rate.png')
+    plt.close()
+
+    mean_weighted_accuracy = df.groupby('scene_id')['accuracy_weighted'].mean().reset_index()
+
+    # Plot mean weighted accuracy for each scene
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='scene_id', y='accuracy_weighted', data=mean_weighted_accuracy)
+    plt.title('Mean Weighted Accuracy for Each Scene')
+    plt.xlabel('Scene ID')
+    plt.ylabel('Mean Weighted Accuracy')
+    plt.ylim(0, 1)
+    plt.savefig(f'logs/{run_name}/mean_weighted_accuracy.png')
+    plt.close()
+
+
+    mean_icl_accuracy = df.groupby('icl')['accuracy_weighted'].mean().reset_index()
+
+    plt.figure(figsize=(10, 6))
+    sns.barplot(x='icl', y='accuracy_weighted', data=mean_icl_accuracy)
+    plt.title('Mean Weighted Accuracy across icl')
+    plt.xlabel('num_icl')
+    plt.ylabel('Mean Weighted Accuracy')
+    plt.ylim(0, 1)
+    plt.savefig(f'logs/{run_name}/mean_icl_accuracy.png')
+    plt.close()
+
+    df.to_pickle(f'logs/{run_name}/df_results.pkl')

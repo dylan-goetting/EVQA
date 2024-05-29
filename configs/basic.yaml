@@ -1,13 +1,21 @@
-    headless: True
-    offline: True
-    resolution:
-    - 1080 
-    - 1920
-    num_objects: 3
-    num_samples: 2
-    num_iterations: 30
-    vlm_cls: LLaVaAgent
-    vlm_kwargs:
-      llm: mistral
-      size: 7b
-    data_path: '4sim1000'
+headless: True
+offline: True
+resolution:
+  - 1080 
+  - 1920
+num_objects: 
+  max: 3
+  min: 3
+num_samples:
+  max: 3
+  min: 1
+num_iterations: 15
+vlm_cls: LLaVaAgent
+vlm_kwargs:
+  llm: mistral
+  size: 7b
+data_path: '4sim2000'
+log_freq: 5
+icl:
+  max: 2
+  min: 0

@@ -70,7 +70,7 @@ class LLaVaAgent(VLMAgent):
         print('starting output')
         t = time.time()
         input_tokens = inputs['input_ids'].shape[1]
-        output = self.model.generate(**inputs, max_new_tokens=1000)
+        output = self.model.generate(**inputs, max_new_tokens=600)
         duration = time.time() - t
         tokens_generated = output.shape[1]-input_tokens
         print(f'{self.name} finished inference, took {duration} seconds, speed of {tokens_generated/duration} t/s')

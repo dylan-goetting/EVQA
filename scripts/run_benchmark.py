@@ -10,12 +10,14 @@ from src.llavaAgent import *
 DEFAULT_CONFIG = {
     'headless': True,
     'resolution': (1080, 1920),
-    'num_objects':2,
-    'num_samples':1,
+    'num_objects': {'max': 2, 'min': 2},
+    'num_samples': {'max': 1, 'min': 1},
     'num_iterations': 200,
     'offline': True,
     'vlm_cls': 'LLaVaAgent',
-    'vlm_kwargs': {'llm': 'mistral', 'size':'7b'}
+    'vlm_kwargs': {'llm': 'mistral', 'size':'7b'},
+    'log_freq': 10,
+    'icl': {'max':0, 'min': 0}
 }
 
 if __name__ == '__main__':
@@ -29,6 +31,7 @@ if __name__ == '__main__':
         config = yaml.safe_load(file)
         config = {**DEFAULT_CONFIG, **config}
     
+
     sim_kwargs = {'scene_path': 'datasets/hm3d/minival/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb',
                   'scene_config': "datasets/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
                   'resolution': config['resolution'], 'headless': config['headless']}
@@ -38,4 +41,4 @@ if __name__ == '__main__':
     vlm_agent = vlm_cls(**config['vlm_kwargs'])
 
     benchmark = SpatialBenchmark(sim_kwargs, vlm_agent, offline=config['offline'], data_path=config['data_path'])
-    benchmark.run(num_objects=config['num_objects'], num_samples=config['num_samples'], num_iterations = config['num_iterations'])
+    benchmark.run(objects=config['num_objects'], samples=config['num_samples'], num_iterations = config['num_iterations'], log_freq = config['log_freq'], icl=config['icl'])
