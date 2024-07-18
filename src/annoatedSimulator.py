@@ -13,9 +13,10 @@ from src.utils import *
 
 class AnnotatedSimulator:
 
-    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, verbose=False
-                 ):
+    def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, 
+                 verbose=False, scene_id=None):
 
+        self.scene_id = scene_id
         self.verbose = verbose
         self.filtered_objects = []
         self.steps = 0
@@ -36,7 +37,6 @@ class AnnotatedSimulator:
         if show_semantic:
             cv2.namedWindow("Semantic View", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("Semantic View", self.RESOLUTION[1], self.RESOLUTION[0])
-        self.scene_id = None
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
@@ -77,7 +77,7 @@ class AnnotatedSimulator:
                 continue
             if counted_categories[obj.category] > 1:
                 continue
-            if obj_ids[obj.semantic_id] < 5:
+            if obj_ids[obj.semantic_id] < 15:
                 continue
             local_pt = global_to_local(sensor_state.position, sensor_state.rotation, obj.aabb.center)
             x_p, y_p = self.project_2d(local_pt)
@@ -89,7 +89,7 @@ class AnnotatedSimulator:
             valid = True
             if len(filtered) > 0:
                 for _, (xp, yp) in filtered:
-                    if abs(xp - x_p) < 100 and abs(yp - y_p) < 30:
+                    if abs(xp - x_p) < 200 and abs(yp - y_p) < 60:
                         valid = False
                         break
             if not valid:
@@ -102,7 +102,7 @@ class AnnotatedSimulator:
                 distance = np.linalg.norm(global_to_local(sensor_state.position, sensor_state.rotation, raycast_results.hits[0].point))
                 com_distance = np.linalg.norm(local_pt)
                 error = abs(distance-com_distance)/distance
-                if error > 0.15:
+                if error > 0.1:
                     continue
                 #print(f'raytesting to {obj.category.name()}, hit {self.sim.semantic_scene.objects[raycast_results.hits[0].object_id].category.name()}, point {}, local coords are {local_pt}')
                 #print(f"[Ray testing]: object {obj.category.name()}, ray distance: {distance}, com distance: {com_distance}, error: {error}")

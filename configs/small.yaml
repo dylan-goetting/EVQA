@@ -5,17 +5,19 @@ resolution:
   - 1920
 num_objects: 
   max: 3
-  min: 3
+  min: 2
 num_samples:
   max: 3
   min: 1
-num_iterations: 15
+icl:  
+  max: 0
+  min: 0
+num_iterations: 500
 vlm_cls: LLaVaAgent
 vlm_kwargs:
   llm: mistral
   size: 7b
-data_path: '4sim2000'
-log_freq: 5
-icl:
-  max: 2
-  min: 0
+  quantize: False
+data_path: '10scenes2000'
+log_freq: 50
+shuffle: True

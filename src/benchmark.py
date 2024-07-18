@@ -1,4 +1,5 @@
 import os
+import sys
 import pdb
 import pickle
 import random
@@ -9,18 +10,15 @@ import cv2
 import ast
 import h5py
 import pandas as pd
-from src.llavaAgent import LLaVaAgent
 from PIL import Image
 from src.utils import *
 from src.vlmAgent import VLMAgent
 from src.annoatedSimulator import AnnotatedSimulator
-from torch.utils.tensorboard import SummaryWriter
 import seaborn as sns
-
 
 class SpatialBenchmark:
 
-    def __init__(self, sim_kwargs, vlm_agent, offline=True, data_path=None):
+    def __init__(self, sim_kwargs, vlm_agent: VLMAgent, offline=True, data_path=None):
         self.offline = offline
         if self.offline:
             data_path = f'annotated_datasets/{data_path}.hdf5'
@@ -35,25 +33,33 @@ class SpatialBenchmark:
 
         columns = [
             'x_pts', 'x_pts_weighted', 'x_possible_pts_weighted', 'y_pts', 'y_possible_pts_weighted', 'z_pts', 'z_possible_pts_weighted', 
-            'accuracy', 'accuracy_weighted', 'tokens_generated', 'num_samples', 'num_objects', 'speed', 'scene_id', 'success', 'num_icl'
+            'accuracy', 'accuracy_weighted', 'tokens_generated', 'num_samples', 'num_objects', 'speed', 'scene_id', 'success', 'num_icl', 
+            'model', 'input_tokens'
         ]
         self.df = pd.DataFrame(columns=columns)
         self.vlm_errors = 0
         self.iterations = 0
-        self.run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + " " + self.vlmAgent.name
 
-    def evaluate_vlm(self, context, num_samples, num_objects, log_freq, num_icl = 0):
+    def evaluate_vlm(self, context, num_samples, num_objects, log_freq, num_icl=0):
         obj_wrappers = context['annotations']
         image = context['image']
-        prompt = ("You are a robot navigating within a 3-D environment as shown. In the image you see, there are "
-                  f"{num_objects} labeled objects. You will be asked to analyze the spatial position of these labeled "
-                  f"objects with relation to each other. The red dots on each object are the object's center of mass, "
-                  f"which you should use when comparing the position of two objects. From your point of view, "
-                  f"answer each question with the descriptors right/left, above/below, in front/behind")
+
+        prompt = ("In the image you see, there are "
+                  f"{num_objects} labeled objects. ")
+        if random.random() > 0:
+            prompt = "You are a robot navigating within a 3-D environment as shown. " + prompt
+        if random.random() > 1:
+            prompt += ("The red dots on each object are the object's center of mass, "
+                  f"which you should use when comparing the position of two objects. ")
+        if random.random() > 0:
+            prompt += ("You will be asked to analyze the spatial position of these labeled "
+                  f"objects with relation to each other. ")
+        prompt += f"From your point of view, answer the following {num_samples} question(s) with the descriptors right/left, above/below, in front/behind. "
         labels = []
         weights = []
         ht = set()
-
+        queries = ""
         while len(labels) < num_samples:
             obj1, obj2 = random.sample(obj_wrappers, 2)
             if (obj2['obj'], obj1['obj']) not in ht and (obj1['obj'], obj2['obj']) not in ht:
@@ -61,18 +67,22 @@ class SpatialBenchmark:
                 l, w = self.parse_diff_vector(obj2['curr_local_coords'], obj1['curr_local_coords'])
                 labels.append(l)
                 weights.append(self.calculate_weights(*w))
-                prompt += f"\n\t{len(labels)}.) Where is the {obj2['obj']} in relation to the {obj1['obj']}?"
+                queries += f"\n\t{len(labels)}.) Where is the {obj2['obj']} in relation to the {obj1['obj']}?"
         weights = np.array(weights, dtype=object)
         assert weights.shape == (num_samples, 3)
         if num_icl == 0:
-            prompt += ("\nReason through the task and describe the 3d layout of the image you see. Tell me your exact thought process as you examine the objects. At the very end of your response, output "
-                   "a json object in the following example format:"
-                   f"\n{{1: ['right', 'above', 'behind'], 2: ['left', 'below', 'in front']]]\n}} Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n")
+            prompt += queries + '\n'
+            if random.random() > 0:
+                prompt += "Reason through the task and describe the 3d layout of the image you see. "
+            if random.random() > 1:
+                prompt += "Tell me your exact thought process as you examine the objects. "
+
+            prompt += f"At the very end of your response, output a JSON object in the following format: {num_samples} key pair(s) where each key corresponds to the number of the question it is answering. Each value should be a three item list, where the first element is either right or left the second is above or below and the third is in front or behind"
+                #    f"\n{{1: ['right', 'above', 'behind'], 2: ['left', 'below', 'in front']}}\nNote that this example format would respond to 2 questions but in your response there should be exactly {num_samples} key-pairs and each key is the number of the question.")
         else:
-            prompt += ("\nReason through the task and describe the 3d layout of the image you see. Tell me your exact thought process as you examine the objects. At the very end of your response, output "
-                   "a json object in the following example format:")
+            prompt += "For an example, here are some questions about the picture you see:"
             qs = ""
-            ans = "\n[answer]: \n{"
+            ans = "\nAnd this is here are the ground truth answers for the previous questions in the correct format:\n{"
             icl = 0
             while icl < num_icl:
                 obj1, obj2 = random.sample(obj_wrappers, 2)
@@ -82,11 +92,14 @@ class SpatialBenchmark:
                     l, _ = self.parse_diff_vector(obj2['curr_local_coords'], obj1['curr_local_coords'])
                     qs += f"\n\t{icl}.) Where is the {obj2['obj']} in relation to the {obj1['obj']}?"
                     ans += f"{icl}: ['{l[0]}', '{l[1]}', '{l[2]}'], "
-            ans = ans[:-2]
-            ans += f'}}\n Make sure there are exactly {num_samples} key-pairs and each key is the number of the question\n'
-            icl_prompt = 'For an example, here is the answer to the following question(s)' + qs + ans
-            ndx = prompt.index('/behind') + 8
-            prompt = prompt[0:ndx] + icl_prompt + prompt[ndx:]
+            ans = ans[:-2] + '}'
+            ans += f'\nNow here are the actual questions for your task:'
+            prompt = prompt + qs + ans + queries + '\n'
+            if random.random() > 0.3:
+                prompt += "Reason through the task and describe the 3d layout of the image you see. "
+            if random.random() > 0.3:
+                prompt += "Tell me your exact thought process as you examine the objects. "
+            prompt += (f"At the very end of your response, output a json object in the format shown above. Make sure there are exactly {num_samples} key-pairs and each key is the number of the question.")
 
         response, performance = self.vlmAgent.call(image, prompt, num_samples)
         predictions = self.parse_response(response)
@@ -96,7 +109,8 @@ class SpatialBenchmark:
                 'z_pts':0, 'z_pts_weighted':0, 'z_possible_pts_weighted':weights[:, 2].sum(),
                 'accuracy':0, 'accuracy_weighted':0, 'tokens_generated':performance['tokens_generated'], 
                 'num_samples':num_samples, 'num_objects':num_objects, 'success': 1, 'icl': num_icl,
-                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id']}
+                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'], 
+                'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens']}
         try:
             for i in range(num_samples):
                 for j, axis in enumerate(['x_pts', 'y_pts', 'z_pts']):
@@ -109,6 +123,7 @@ class SpatialBenchmark:
                         row[f'{axis}_weighted'] += weights[i][j]
             row['accuracy'] = (row['x_pts'] + row['y_pts'] + row['z_pts'])/(num_samples*3)
             row['accuracy_weighted'] = (row['x_pts_weighted'] + row['y_pts_weighted'] + row['z_pts_weighted'])/(weights.sum())
+            #print(f'iter {self.iterations} weighted accuracy: {row["accuracy_weighted"]}')
 
         except (KeyError, IndexError) as e:
             print(e)
@@ -124,19 +139,21 @@ class SpatialBenchmark:
                     path += '_ERROR'
                 os.makedirs(path)
                 im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
-                im_file.save(f'{path}/image_prompt.png')
+                scene_id = context['scene_id']
+                im_file.save(f'{path}/image_scene{scene_id}.png')
                 with open(f'{path}/details.txt', 'w') as file:
                     file.write(f'[PROMPT]\n{prompt}\n\n')
                     file.write(f'[GROUND TRUTH]\n{labels}\n\n')
                     file.write(f'[MODEL OUTPUT]\n{response}\n\n')
                     file.write(f'[PERFORMANCE]\n{performance}')
-        
+                    file.write(f'\n\n[WEIGHTS] {weights}')       
+                    # file.write(f"[SCORES] {[row[axis] for axis in ['x_pts', 'y_pts', 'z_pts'] ]}") 
 
     def calculate_weights(self, theta_x, theta_y, ratio_z):
 
         weight_x = theta_x**2 / (100 + theta_x**2)
         weight_y = theta_y**2/ (75 + theta_y**2)
-        weight_z = ratio_z**2/ (0.001 + ratio_z**2)
+        weight_z = ratio_z**2/ (0.02 + ratio_z**2)
 
         return [weight_x, weight_y, weight_z]
 
@@ -172,18 +189,23 @@ class SpatialBenchmark:
             response_dict = {}
         return response_dict
 
-    def run(self, objects=4, samples=3, num_iterations=100, log_freq = 10, icl = None):
+    def run(self, objects=4, samples=3, num_iterations=100, log_freq = 10, icl = None, shuffle=False):
+        if shuffle:
+            indices = list(range(len(self.dataset)))
+            random.shuffle(indices)
         try:
             for iter in range(num_iterations):
+
                 num_objects = random.randint(objects['min'], objects['max'])
-                num_icl = random.randint(icl['min'], icl['max'])
                 max_samples = int(num_objects * (num_objects - 1) / 2) 
-                if num_icl >= max_samples:
-                    num_icl = 0
-                max_samples -= num_icl
-                num_samples = random.randint(samples['min'], min(max_samples, samples['max'] + icl['max']))
+                num_samples = random.randint(samples['min'], min(max_samples, samples['max']))
+                num_icl = random.randint(icl['min'], min(icl['max'], max_samples - num_samples))
+
                 if self.offline:
-                    item = self.dataset[iter]
+                    if shuffle:
+                        item = self.dataset[indices[iter]]
+                    else:
+                        item = self.dataset[iter]
                     annotations = pickle.loads(item['annotations'])
                     image = item['image']
                     for i in range(num_objects):
@@ -218,8 +240,7 @@ class SpatialBenchmark:
             self.annotatedSimulator.sim.close()
         if not self.headless:
             cv2.destroyAllWindows()
-
-        pdb.set_trace()
+            
         print('\nComplete')
 
     def select_action(self):

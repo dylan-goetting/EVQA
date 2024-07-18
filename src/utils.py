@@ -40,7 +40,7 @@ def annotate_image_offline(annotation, image, fov):
     # Assuming you have an image captured from the sensor
     cv2.circle(image, (x_pixel, y_pixel), 5, (255, 0, 0), -1)
     font = cv2.FONT_HERSHEY_DUPLEX
-    font_scale = 0.85
+    font_scale = 1
     font_color = (0, 0, 0)
     font_thickness = 1
     text_size, baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
@@ -67,7 +67,20 @@ def plot_results(df, run_name):
 
     # Add the correlation label
     plt.text(0.1, max(df['tokens_generated']) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
-    plt.savefig(f'logs/{run_name}/accuracy_vs_tokens.png')
+    plt.savefig(f'logs/{run_name}/accuracy_vs_out_tokens.png')
+    plt.close()
+
+    correlation = df['accuracy_weighted'].corr(df['input_tokens'])
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df['accuracy_weighted'], df['input_tokens'], alpha=0.5)
+    plt.xlabel('Weighted Accuracy')
+    plt.ylabel('Prompt tokens')
+    plt.title('Weighted Accuracy vs Prompt Tokens')
+
+    # Add the correlation label
+    plt.text(0.1, max(df['input_tokens']) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
+    plt.savefig(f'logs/{run_name}/accuracy_vs_inp_tokens.png')
     plt.close()
 
     plt.figure(figsize=(10, 6))

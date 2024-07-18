@@ -24,20 +24,17 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    files = os.listdir('scenes/hm3d/minival/')
+    files = os.listdir('scenes/hm3d/val/')
     scene_paths = []
-    simulators = []
-
+    sim_kwargs = []
     for f in files:
         try:
             if int(f[2:5]) in args.scene_ids:
+                # pdb.set_trace()
                 hsh = f[6:] 
-                sim_kwargs = {'scene_path': f'scenes/hm3d/minival/00{f[2:5]}-{hsh}/{hsh}.basis.glb',
-                            'scene_config': "scenes/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
-                            'resolution': args.resolution, 'headless': args.headless, 'fov': args.fov}
-                s = AnnotatedSimulator(**sim_kwargs)
-                s.scene_id = f[2:5]
-                simulators.append(s)
+                sim_kwargs.append({'scene_path': f'scenes/hm3d/val/00{f[2:5]}-{hsh}/{hsh}.basis.glb',
+                            'scene_config': "scenes/hm3d/val/hm3d_annotated_val_basis.scene_dataset_config.json",
+                            'resolution': args.resolution, 'headless': args.headless, 'fov': args.fov, 'scene_id': f[2:5]})
 
         except:
             continue
@@ -50,13 +47,20 @@ if __name__ == '__main__':
         ('label', int),
         ('scene_id', 'S100')
     ])
+    i = 0
     with h5py.File(f'annotated_datasets/{args.name}.hdf5', 'w') as f:
-    # Create a group for images
     
         dataset = f.create_dataset("data", shape=(args.size,), dtype=custom_dtype)   
 
         for iter in range(args.size):
-            sim = random.sample(simulators, 1)[0]
+            if iter % (args.size//len(sim_kwargs)) == 0:
+                if i > 0:
+                    sim.sim.close()
+                sim = AnnotatedSimulator(**sim_kwargs[i])
+                if i < len(sim_kwargs)-1:
+                    i += 1
+                print(f"moving onto simulator {sim.scene_id}")
+
             while True:
                 out = sim.step('r', num_objects=args.max_objects, annotate_image=False)
                 if len(out['annotations']) == args.max_objects:

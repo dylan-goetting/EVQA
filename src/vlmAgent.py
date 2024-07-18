@@ -11,10 +11,7 @@ class VLMAgent:
     Trivial agent for testing
     """
     def __init__(self, **kwargs):
-        pass
+        self.name = "not implemented"
 
     def call(self, visual_prompt: np.array, text_prompt: str, num_samples):
-        out = {}
-        for i in range(num_samples):
-            out[i+1] = ['right', 'neutral', 'in front']
-        return out
+        return ""

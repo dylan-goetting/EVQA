@@ -1,0 +1,23 @@
+headless: True
+offline: True
+resolution:
+  - 1080 
+  - 1920
+num_objects: 
+  max: 2
+  min: 3
+num_samples:
+  max: 1
+  min: 3
+icl:  
+  max: 0
+  min: 0
+num_iterations: 500
+vlm_cls: LLaVaAgent
+vlm_kwargs:
+  llm: vicuna
+  size: 13b
+  quantize: False
+data_path: '10scenes2000'
+log_freq: 20
+shuffle: False
