@@ -31,10 +31,11 @@ if __name__ == '__main__':
         try:
             if int(f[2:5]) in args.scene_ids:
                 # pdb.set_trace()
-                hsh = f[6:] 
-                sim_kwargs.append({'scene_path': f'scenes/hm3d/val/00{f[2:5]}-{hsh}/{hsh}.basis.glb',
-                            'scene_config': "scenes/hm3d/val/hm3d_annotated_val_basis.scene_dataset_config.json",
-                            'resolution': args.resolution, 'headless': args.headless, 'fov': args.fov, 'scene_id': f[2:5]})
+                hsh = f[6:]
+                for fov in [90]:
+                    sim_kwargs.append({'scene_path': f'scenes/hm3d/val/00{f[2:5]}-{hsh}/{hsh}.basis.glb',
+                                'scene_config': "scenes/hm3d/val/hm3d_annotated_val_basis.scene_dataset_config.json",
+                                'resolution': args.resolution, 'headless': args.headless, 'fov': fov, 'scene_id': f[2:5]})
 
         except:
             continue
@@ -44,6 +45,7 @@ if __name__ == '__main__':
         ('image', np.uint8, (args.resolution[0], args.resolution[1], 4)),
         ('annotations', 'S5000'),  # JSON string, up to 1000 bytes
         ('fov', int),
+        ('resolution', 'S100'),
         ('label', int),
         ('scene_id', 'S100')
     ])
@@ -73,7 +75,8 @@ if __name__ == '__main__':
             item['image'] = image_float
             item['annotations'] = json_mdata
             item['label'] = iter
-            item['fov'] = args.fov
+            item['fov'] = sim_kwargs[i]['fov']
             item['scene_id'] = sim.scene_id
+            item['resolution'] = f'{sim.RESOLUTION[0]}, {sim.RESOLUTION[1]}'
             dataset[iter] = item
             print(f'iter: {iter}')

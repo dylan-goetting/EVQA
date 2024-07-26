@@ -1,5 +1,6 @@
 import yaml
 import argparse
+import os
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 from src.benchmark import *
@@ -16,9 +17,7 @@ DEFAULT_CONFIG = {
     'vlm_kwargs': {'llm': 'mistral', 'size':'7b'},
     'log_freq': 10,
     'icl': {'max':0, 'min': 0},
-    'shuffle': False,
-    'dynamic': False,
-    'inner_loop': 1
+    'shuffle': False
 }
 
 if __name__ == '__main__':
@@ -31,15 +30,13 @@ if __name__ == '__main__':
         config = yaml.safe_load(file)
         config = {**DEFAULT_CONFIG, **config}
 
-    sim_kwargs = {'scene_path': 'datasets/hm3d/minival/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb',
-                  'scene_config': "datasets/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
-                  'resolution': config['resolution'], 'headless': config['headless']}
+    sim_kwargs = {'scene_path': 'scenes/hm3d/val/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb',
+                  'scene_config': "scenes/hm3d/val/hm3d_annotated_minival_basis.scene_dataset_config.json",
+                  'resolution': config['resolution'], 'headless': False}
+    
     vlm_kwargs = {'llm': 'mistral', 'size':'7b'}
     vlm_cls = locals()[config['vlm_cls']]
     vlm_agent = vlm_cls(**config['vlm_kwargs'])
 
-    benchmark = SpatialBenchmark(sim_kwargs, vlm_agent, offline=config['offline'], data_path=config['data_path'])
-    benchmark.run(objects=config['num_objects'], samples=config['num_samples'], 
-                  num_iterations = config['num_iterations'], log_freq = config['log_freq'], 
-                  icl=config['icl'], shuffle=config['shuffle'], dynamic=config['dynamic'], 
-                  inner_loop=config['inner_loop'])
+    benchmark = SpatialBenchmark(sim_kwargs, vlm_agent, offline=False, data_path=config['data_path'])
+    benchmark.run(objects=config['num_objects'], samples=config['num_samples'], num_iterations = config['num_iterations'], log_freq = config['log_freq'], icl=config['icl'], shuffle=config['shuffle'])

@@ -49,7 +49,7 @@ class LLaVaAgent(VLMAgent):
         self.model = LlavaNextForConditionalGeneration.from_pretrained(**model_kwargs).to('cuda:0')
     
     
-    def call(self, visual_prompt: np.array, text_prompt: str, num_samples):
+    def call(self, visual_prompt: np.array, text_prompt: str, num_samples=0):
         
         if not self.is_setup:
             self.setup(*self.setup_pargs, **self.setup_kwargs)

@@ -55,49 +55,76 @@ def annotate_image_offline(annotation, image, fov):
 
     return image
 
-def plot_results(df, run_name):
+def plot_correlation_scatter(df, xvar, yvar):
+    correlation = df[xvar].corr(df[yvar])
+
+    plt.figure(figsize=(10, 6))
+    plt.scatter(df[xvar], df[yvar], alpha=0.5)
+    plt.xlabel(xvar)
+    plt.ylabel(yvar)
+    plt.title(f'Scatter of {xvar} vs {yvar}')
+
+    # Add the correlation label
+    plt.text(0.1, max(df[yvar]) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
+    plt.show()
+
+def plot_distribution(df, var, bins=20):
+    mean_value = df[var].mean()
+    median_value = df[var].median()
     
-    correlation = df['accuracy_weighted'].corr(df['tokens_generated'])
-
     plt.figure(figsize=(10, 6))
-    plt.scatter(df['accuracy_weighted'], df['tokens_generated'], alpha=0.5)
-    plt.xlabel('Weighted Accuracy')
-    plt.ylabel('Tokens Generated')
-    plt.title('Weighted Accuracy vs Tokens Generated')
-
-    # Add the correlation label
-    plt.text(0.1, max(df['tokens_generated']) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
-    plt.savefig(f'logs/{run_name}/accuracy_vs_out_tokens.png')
-    plt.close()
-
-    correlation = df['accuracy_weighted'].corr(df['input_tokens'])
-
-    plt.figure(figsize=(10, 6))
-    plt.scatter(df['accuracy_weighted'], df['input_tokens'], alpha=0.5)
-    plt.xlabel('Weighted Accuracy')
-    plt.ylabel('Prompt tokens')
-    plt.title('Weighted Accuracy vs Prompt Tokens')
-
-    # Add the correlation label
-    plt.text(0.1, max(df['input_tokens']) * 0.9, f'Correlation: {correlation:.2f}', fontsize=12, ha='left')
-    plt.savefig(f'logs/{run_name}/accuracy_vs_inp_tokens.png')
-    plt.close()
-
-    plt.figure(figsize=(10, 6))
-    plt.hist(df['tokens_generated'], bins=20, color='blue', alpha=0.7)
-    plt.xlabel('Tokens Generated')
+    plt.hist(df[var], bins=bins, color='blue', alpha=0.7)
+    
+    # Plot mean and median lines
+    plt.axvline(mean_value, color='red', linestyle='dashed', linewidth=1, label=f'Mean: {mean_value:.2f}')
+    plt.axvline(median_value, color='green', linestyle='dashed', linewidth=1, label=f'Median: {median_value:.2f}')
+    
+    # Add labels and title
+    plt.xlabel(var)
     plt.ylabel('Frequency')
-    plt.title('Distribution of Tokens Generated')
-    plt.savefig(f'logs/{run_name}/tokens_generated_histogram.png')
-    plt.close()
+    plt.title(f'Distribution of {var}')
+    
+    # Add legend
+    plt.legend()
+    
+    plt.show()
 
+def plot_heatmap(df, xvar, yvar, value):
+    heatmap_data = df.pivot_table(index=xvar, columns=yvar, values=value, aggfunc='mean')
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(heatmap_data, annot=True, cmap='viridis', cbar_kws={'label': value})
+    plt.title('Heatmap of Weighted Accuracy')
+    plt.show()
+
+def plot_groupby(df, groupby, var, std=True):
+    # df['group'] = df['itr'] // 50
+
+    # Group by the new 'group' column
+    grouped = df.groupby(groupby)[var]
+
+    # Calculate mean and standard deviation for each group
+    mean_accuracy = grouped.mean()
+    std_accuracy = grouped.std()
+
+    # Create a bar plot with error bars
     plt.figure(figsize=(10, 6))
-    plt.hist(df['speed'], bins=20, color='green', alpha=0.7)
-    plt.xlabel('Speed')
-    plt.ylabel('Frequency')
-    plt.title('Distribution of Speed')
-    plt.savefig(f'logs/{run_name}/speed_histogram.png')
-    plt.close()
+    if std:
+        plt.bar(mean_accuracy.index, mean_accuracy, yerr=std_accuracy, capsize=5)
+        plt.title(f'Mean ± 1 SD of {var} vs groupby')   
+    else:
+        plt.bar(mean_accuracy.index, mean_accuracy)
+        plt.title(f'Mean of {var} vs groupby')   
+
+    plt.xlabel(groupby)
+    plt.ylabel(var)
+    plt.show()
+
+
+def plot_results(df, run_name):
+
+
+
 
     df['x_weighted_accuracy'] = df['x_pts_weighted'] / df['x_possible_pts_weighted']
     df['y_weighted_accuracy'] = df['y_pts_weighted'] / df['y_possible_pts_weighted']

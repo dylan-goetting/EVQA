@@ -31,20 +31,59 @@ class SpatialBenchmark:
 
         self.vlmAgent = vlm_agent
 
-        columns = [
-            'x_pts', 'x_pts_weighted', 'x_possible_pts_weighted', 'y_pts', 'y_possible_pts_weighted', 'z_pts', 'z_possible_pts_weighted', 
-            'accuracy', 'accuracy_weighted', 'tokens_generated', 'num_samples', 'num_objects', 'speed', 'scene_id', 'success', 'num_icl', 
-            'model', 'input_tokens'
-        ]
-        self.df = pd.DataFrame(columns=columns)
+        self.df = pd.DataFrame({})
         self.vlm_errors = 0
         self.iterations = 0
         self.run_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + " " + self.vlmAgent.name
 
+    def evaluate_vlm_distance(self, context, log_freq, image_id):
+        obj1, obj2 = context['annotations']
+        image = context['image']
+        prompt = f"You are an embodied agent looking at your surrounding environment. Based on your existing knowledge of typical room layouts and the typical size of visable objects, do your best to estimate in meters the distance between the {obj1['obj']} and the {obj2['obj']}, which are both labeled for you. For reference you are 1.5 meters off the ground. Additionally, rate the difficulty of these specific objects of 1 to 5, where 1 is a confident estimate and 5 is a complete guess"
+        prompt += "\nLastly, Return your answer as a JSON object in the following format {distance: <distance>, difficulty: <confidence>}"
+
+        response, performance = self.vlmAgent.call(image, prompt, 2)
+        predictions = self.parse_response(response)
+        gt = np.linalg.norm(obj1['curr_local_coords'] - obj2['curr_local_coords'])
+        farther_dist = max(np.linalg.norm(obj1['curr_local_coords'] ), np.linalg.norm(obj2['curr_local_coords']))
+
+        row = {'prediction':0, 'ground_truth':0, 'mse': float('inf'), 'condfidence': 0, 'next_action' :'na', 'tokens_generated':performance['tokens_generated'], 'success': 1,
+                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'], 'object_dist': farther_dist,
+                'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens'], 'itr': self.iterations, 'image_id': image_id}
+        
+        try:
+            row['ground_truth'] = gt
+            row['prediction'] = predictions['distance']
+            row['mse'] = (gt - predictions['distance'])**2
+            row['score'] = abs(gt - predictions['distance'])/gt
+            row['confidence'] = predictions['difficulty']
+
+        except (KeyError, IndexError) as e:
+            print(e)    
+            row['success'] = 0
+            print("Error parsing VLM response, moving on")
+
+        finally:
+            row = pd.DataFrame([row])
+            self.df= pd.concat([self.df, row], ignore_index=True)
+            if self.iterations % log_freq == 0 or row['success'][0] == 0:
+                path = f'logs/{self.run_name}/iter{self.iterations}'
+                if row['success'][0] == 0:
+                    path += '_ERROR'
+                os.makedirs(path)
+                im_file = Image.fromarray(image[:, :, 0:3].astype('uint8'))
+                scene_id = context['scene_id']
+                im_file.save(f'{path}/image_scene{scene_id}.png')
+                with open(f'{path}/details.txt', 'w') as file:
+                    file.write(f'[PROMPT]\n{prompt}\n\n')
+                    file.write(f'[GROUND TRUTH]\n{gt}\n\n')
+                    file.write(f'[MODEL OUTPUT]\n{response}\n\n')
+                    file.write(f'[PERFORMANCE]\n{performance}')
+
     def evaluate_vlm(self, context, num_samples, num_objects, log_freq, num_icl=0):
         obj_wrappers = context['annotations']
         image = context['image']
-
+ 
         prompt = ("In the image you see, there are "
                   f"{num_objects} labeled objects. ")
         if random.random() > 0:
@@ -109,8 +148,8 @@ class SpatialBenchmark:
                 'z_pts':0, 'z_pts_weighted':0, 'z_possible_pts_weighted':weights[:, 2].sum(),
                 'accuracy':0, 'accuracy_weighted':0, 'tokens_generated':performance['tokens_generated'], 
                 'num_samples':num_samples, 'num_objects':num_objects, 'success': 1, 'icl': num_icl,
-                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'], 
-                'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens']}
+                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'], 'fov': context['fov'],
+                'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens'], 'itr': self.iterations}
         try:
             for i in range(num_samples):
                 for j, axis in enumerate(['x_pts', 'y_pts', 'z_pts']):
@@ -189,9 +228,12 @@ class SpatialBenchmark:
             response_dict = {}
         return response_dict
 
-    def run(self, objects=4, samples=3, num_iterations=100, log_freq = 10, icl = None, shuffle=False):
+    def run(self, objects=4, samples=3, num_iterations=100, log_freq = 10, icl = None, shuffle=False, dynamic=False, inner_loop=1):
+        image_id = 0
         if shuffle:
             indices = list(range(len(self.dataset)))
+            indices = list(range(1300))
+
             random.shuffle(indices)
         try:
             for iter in range(num_iterations):
@@ -226,15 +268,18 @@ class SpatialBenchmark:
                             break
                         else:
                             print('sampling another pose, not enough objects')
-                self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects, log_freq=log_freq, num_icl=num_icl)
-                
-                self.iterations += 1
-
+                for i in range(inner_loop):
+                    if dynamic:
+                        self.evaluate_vlm_distance(context, log_freq=log_freq, image_id=image_id)
+                    else:
+                        self.evaluate_vlm(context, num_samples=num_samples, num_objects=num_objects, log_freq=log_freq, num_icl=num_icl)        
+                    self.iterations += 1
+                image_id += 1
         finally:
             print('closing file')
             self.data_file.close()
-        
-        plot_results(self.df, self.run_name)
+        self.df.to_pickle(f'logs/{self.run_name}/df_results.pkl')
+        #plot_results(self.df, self.run_name)
 
         if not self.offline:
             self.annotatedSimulator.sim.close()

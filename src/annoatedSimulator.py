@@ -29,7 +29,7 @@ class AnnotatedSimulator:
         }
         self.RESOLUTION = resolution
         self.show_semantic = show_semantic
-        self.headless =headless
+        self.headless = headless
         if not self.headless:
             cv2.namedWindow("RGB View", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("RGB View", self.RESOLUTION[1], self.RESOLUTION[0])
@@ -41,6 +41,7 @@ class AnnotatedSimulator:
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
         backend_cfg.enable_physics = True
+        backend_cfg.random_seed = 100
         sem_cfg = habitat_sim.CameraSensorSpec()
         sem_cfg.uuid = "semantic"
         sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
@@ -50,7 +51,7 @@ class AnnotatedSimulator:
         rgb_sensor_spec.uuid = "color_sensor"
         rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
         rgb_sensor_spec.resolution = self.RESOLUTION
-        rgb_sensor_spec.hfov = fov
+        rgb_sensor_spec.hfov = fov 
 
         self.focal_length = calculate_focal_length(fov, rgb_sensor_spec.resolution[1])
 
@@ -64,7 +65,7 @@ class AnnotatedSimulator:
     def filter_objects(self, sem_image, sensor_state, max_objects=5):
         obj_ids = Counter(sem_image.flatten())
         objects = [self.sim.semantic_scene.objects[i] for i in obj_ids.keys()]
-        shuffle(objects)
+        #shuffle(objects)
         filtered = []
         bad_categories = ['floor', 'wall', 'ceiling', 'Unknown', 'unknown', 'surface']
         counted_categories = Counter([a.category for a in objects])
@@ -77,7 +78,7 @@ class AnnotatedSimulator:
                 continue
             if counted_categories[obj.category] > 1:
                 continue
-            if obj_ids[obj.semantic_id] < 15:
+            if obj_ids[obj.semantic_id] < 40:
                 continue
             local_pt = global_to_local(sensor_state.position, sensor_state.rotation, obj.aabb.center)
             x_p, y_p = self.project_2d(local_pt)
@@ -89,7 +90,7 @@ class AnnotatedSimulator:
             valid = True
             if len(filtered) > 0:
                 for _, (xp, yp) in filtered:
-                    if abs(xp - x_p) < 200 and abs(yp - y_p) < 60:
+                    if abs(xp - x_p) < 300 and abs(yp - y_p) < 100:
                         valid = False
                         break
             if not valid:
@@ -104,8 +105,6 @@ class AnnotatedSimulator:
                 error = abs(distance-com_distance)/distance
                 if error > 0.1:
                     continue
-                #print(f'raytesting to {obj.category.name()}, hit {self.sim.semantic_scene.objects[raycast_results.hits[0].object_id].category.name()}, point {}, local coords are {local_pt}')
-                #print(f"[Ray testing]: object {obj.category.name()}, ray distance: {distance}, com distance: {com_distance}, error: {error}")
 
             filtered.append([obj, (x_p, y_p)])
 

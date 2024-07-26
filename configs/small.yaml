@@ -4,20 +4,22 @@ resolution:
   - 1080 
   - 1920
 num_objects: 
-  max: 3
+  max: 2
   min: 2
 num_samples:
-  max: 3
+  max: 1
   min: 1
 icl:  
   max: 0
   min: 0
-num_iterations: 500
+num_iterations: 100
 vlm_cls: LLaVaAgent
 vlm_kwargs:
   llm: mistral
   size: 7b
   quantize: False
-data_path: '10scenes2000'
-log_freq: 50
+data_path: 'explore'
+log_freq: 3
 shuffle: True
+dynamic: True
+inner_loop: 1
