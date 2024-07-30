@@ -2,7 +2,7 @@ import pdb
 from collections import Counter
 from random import shuffle
 
-from habitat_sim.utils.common import quat_from_angle_axis
+from habitat_sim.utils.common import quat_from_angle_axis, quat_to_angle_axis
 import habitat_sim
 import cv2
 import numpy as np
@@ -157,6 +157,36 @@ class AnnotatedSimulator:
 
         self.sim.close()
         cv2.destroyAllWindows()
+
+    def move(self, action, magnitude):
+        
+        assert action in ['move_x', 'rotate']
+
+        curr_state = self.sim.get_agent(0).get_state()
+        curr_position = curr_state.position
+        curr_quat = curr_state.rotation #Quaternion
+
+        theta, w = quat_to_angle_axis(curr_quat)
+        pdb.set_trace()
+        new_agent_state = habitat_sim.AgentState()
+        if action == 'move_x':
+            new_agent_state.position = curr_position 
+            new_agent_state.rotation = curr_state.rotation
+            new_agent_state.position[2] += magnitude*np.sin(theta)
+            new_agent_state.position[0] -= magnitude*np.cos(theta)
+        if action == 'rotate':
+            new_w = w + magnitude
+            new_quat = quat_from_angle_axis(new_w, np.array([0, 1, 0]))
+            new_agent_state.position = curr_position
+            new_agent_state.rotation = new_quat
+
+        self.sim.get_agent(0).set_state(new_agent_state)
+        observations = self.sim.get_sensor_observations()
+
+        rgb_image = observations["color_sensor"]
+        sem_image = observations["semantic"]
+
+        return rgb_image
 
     def step(self, action, num_objects=4, annotate_image=False):
         if action == 'r':
