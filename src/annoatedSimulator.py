@@ -143,41 +143,61 @@ class AnnotatedSimulator:
     def run_user_input(self):
         assert not self.headless
         while True:
-            if self.steps > 0:
+            if True: #self.steps > 0:
                 key = cv2.waitKey(0)
+
                 if key == ord("p"):
                     pdb.set_trace()
 
-                action = self.action_mapping.get(key, "move_forward")
-                if action == "stop":
-                    break
-                _ = self.step(action)
+                elif key == ord('w'):
+                    rgb_image = self.move('move_z', 0.2)
+                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+                elif key == ord('a'):
+                    rgb_image = self.move('rotate', np.pi/16)
+                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+                elif key == ord('s'):
+                    rgb_image = self.move('move_z', -0.2)
+                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+                elif key == ord('d'):
+                    rgb_image = self.move('rotate', -np.pi/16)
+                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+                else:
+                    action = self.action_mapping.get(key, "move_forward")
+                    if action == "stop":
+                        break
+                    _ = self.step(action)
             else:
-                _ = self.step('move_forward')
+                pass
+                # _ = self.step('move_forward')
 
         self.sim.close()
         cv2.destroyAllWindows()
 
     def move(self, action, magnitude):
-        
-        assert action in ['move_x', 'rotate']
+        assert action in ['forward', 'rotate']
 
         curr_state = self.sim.get_agent(0).get_state()
         curr_position = curr_state.position
-        curr_quat = curr_state.rotation #Quaternion
+        curr_quat = curr_state.rotation  # Quaternion
 
         theta, w = quat_to_angle_axis(curr_quat)
-        pdb.set_trace()
+        if w[1] < 0:  # Fixing the condition
+            theta = 2 * np.pi - theta
+
         new_agent_state = habitat_sim.AgentState()
-        if action == 'move_x':
-            new_agent_state.position = curr_position 
-            new_agent_state.rotation = curr_state.rotation
-            new_agent_state.position[2] += magnitude*np.sin(theta)
-            new_agent_state.position[0] -= magnitude*np.cos(theta)
-        if action == 'rotate':
-            new_w = w + magnitude
-            new_quat = quat_from_angle_axis(new_w, np.array([0, 1, 0]))
-            new_agent_state.position = curr_position
+        new_agent_state.position = np.copy(curr_position)  # Copy the current position
+        new_agent_state.rotation = curr_quat # Initialize with the current rotation
+
+        if action == 'forward':
+            local_point = np.array([0, 0, -magnitude])
+        
+            global_p = local_to_global(curr_position, curr_quat, local_point)
+                        
+            new_agent_state.position = self.sim.pathfinder.try_step(curr_position, global_p)
+            
+        elif action == 'rotate':
+            new_theta = theta + magnitude
+            new_quat = quat_from_angle_axis(new_theta, np.array([0, 1, 0]))
             new_agent_state.rotation = new_quat
 
         self.sim.get_agent(0).set_state(new_agent_state)
@@ -186,7 +206,7 @@ class AnnotatedSimulator:
         rgb_image = observations["color_sensor"]
         sem_image = observations["semantic"]
 
-        return rgb_image
+        return observations
 
     def step(self, action, num_objects=4, annotate_image=False):
         if action == 'r':
