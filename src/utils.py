@@ -1,14 +1,20 @@
+from os import listdir
+import os
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import quaternion
 import matplotlib.pyplot as plt
 import seaborn as sns
+from IPython.display import HTML
+import matplotlib.animation as animation
 
 
 def local_to_global(p, q, local_point):
+    local_rotated = quaternion.rotate_vectors(q, local_point)
 
-    pass
+    return local_rotated + p
+
 
 def global_to_local(p, q, global_point):
 
@@ -84,9 +90,7 @@ def plot_distribution(df, var, bins=20):
     plt.ylabel('Frequency')
     plt.title(f'Distribution of {var}')
     
-    # Add legend
     plt.legend()
-    
     plt.show()
 
 def plot_heatmap(df, xvar, yvar, value):
@@ -97,7 +101,7 @@ def plot_heatmap(df, xvar, yvar, value):
     plt.title('Heatmap of Weighted Accuracy')
     plt.show()
 
-def plot_groupby(df, groupby, var, std=True):
+def plot_groupby(df, groupby, var, std=True, title=''):
     # df['group'] = df['itr'] // 50
 
     # Group by the new 'group' column
@@ -111,20 +115,64 @@ def plot_groupby(df, groupby, var, std=True):
     plt.figure(figsize=(10, 6))
     if std:
         plt.bar(mean_accuracy.index, mean_accuracy, yerr=std_accuracy, capsize=5)
-        plt.title(f'Mean ± 1 SD of {var} vs groupby')   
+        plt.title(f'Mean ± 1 SD of {var} vs groupby for {title}')   
     else:
         plt.bar(mean_accuracy.index, mean_accuracy)
-        plt.title(f'Mean of {var} vs groupby')   
+        plt.title(f'Mean of {var} vs groupby for {title}')   
 
     plt.xlabel(groupby)
     plt.ylabel(var)
     plt.show()
 
+def line_plot(df, column):
+
+    plt.figure(figsize=(10, 6))
+    
+    # Plot the column values over time
+    plt.plot(df.index, df[column], marker='o', linestyle='-', label=column)
+
+    # Add labels and title
+    plt.xlabel('Time')
+    plt.ylabel(column)
+    plt.title(f'{column} Over Time')
+
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+def plot_trajectory(df):
+
+    coordinates = np.array(df['agent_location'].tolist())
+    x = coordinates[:, 2]
+    y = coordinates[:, 1]
+    z = coordinates[:, 0]
+
+    # Create a scatter plot
+    plt.figure(figsize=(10, 8))
+    scatter = plt.scatter(x, z, c=y, cmap='viridis', s=50, label='Agent Location')
+
+    # Plot arrows to show the direction of movement
+    plt.quiver(x[:-1], z[:-1], x[1:] - x[:-1], z[1:] - z[:-1], angles='xy', scale_units='xy', scale=1, color='gray', alpha=0.5)
+
+    # Add a colorbar
+    colorbar = plt.colorbar(scatter)
+    colorbar.set_label('Y Coordinate')
+
+    # Label start and end points
+    plt.text(x[0], z[0], 'Start', fontsize=12, color='green', ha='right')
+    plt.text(x[-1], z[-1], 'End', fontsize=12, color='red', ha='left')
+
+    # Add labels and title
+    plt.xlabel('X Coordinate')
+    plt.ylabel('Z Coordinate')
+    plt.title('Agent Trajectory Over Time')
+
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
 
 def plot_results(df, run_name):
-
-
-
 
     df['x_weighted_accuracy'] = df['x_pts_weighted'] / df['x_possible_pts_weighted']
     df['y_weighted_accuracy'] = df['y_pts_weighted'] / df['y_possible_pts_weighted']
@@ -152,68 +200,50 @@ def plot_results(df, run_name):
     plt.xlabel('Metrics')
     plt.ylabel('Weighted Accuracy')
     plt.title('Weighted Accuracy for x, y, z and Overall')
-    plt.savefig(f'logs/{run_name}/weighted_accuracy.png')
-    plt.close()
+    plt.show()
 
-    plt.figure(figsize=(15, 5))
+def make_gif(path):
+    fig = plt.figure()
+    ims = []
 
-    plt.subplot(1, 3, 1)
-    sns.histplot(df['x_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
-    plt.title('Distribution of x_possible_pts_weighted')
+    for i in range(len(listdir(path))-1):
+        np_img_i = cv2.imread(os.path.join(path,f"/step{i}/image.png"))
+        #change bgr to rgb
+        np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
 
-    plt.subplot(1, 3, 2)
-    sns.histplot(df['y_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
-    plt.title('Distribution of y_possible_pts_weighted')
+        im = plt.imshow(np_img_i)
+        ims.append([im])
 
-    plt.subplot(1, 3, 3)
-    sns.histplot(df['z_possible_pts_weighted']/df['num_samples'], bins=20, kde=True)
-    plt.title('Distribution of z_possible_pts_weighted')
+    ani = animation.ArtistAnimation(fig, ims, interval=1, blit=True)
+    HTML(ani.to_jshtml())
 
-    plt.tight_layout()
-    plt.savefig(f'logs/{run_name}/histograms_possible_pts_weighted.png')
-    plt.close()
+def agent_frame_to_image_coords(self, point, agent_state):
+    global_point = local_to_global(agent_state.position, agent_state.rotation, point)
+    camera_state = agent_state.sensor_states['color_sensor']
+    camera_point = global_to_local(camera_state.position, camera_state.rotation, global_point)
+    xp, yp = self.project_2d(camera_point)
 
-    # Heatmap showing the accuracy_weighted across the two axes of num_samples and num_objects
-    heatmap_data = df.pivot_table(index='num_samples', columns='num_objects', values='accuracy_weighted', aggfunc='mean')
+    return xp, yp
 
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(heatmap_data, annot=True, cmap='viridis', cbar_kws={'label': 'Weighted Accuracy'})
-    plt.title('Heatmap of Weighted Accuracy')
-    plt.savefig(f'logs/{run_name}/heatmap_accuracy_weighted.png')
-    plt.close()
-
-    # Error rate plot where success (0 means error)
-    error_rate = 1 - df['success'].mean()
-
-    plt.figure(figsize=(6, 4))
-    sns.barplot(x=['Error Rate'], y=[error_rate])
-    plt.title('Error Rate')
-    plt.ylim(0, 1)
-    plt.savefig(f'logs/{run_name}/error_rate.png')
-    plt.close()
-
-    mean_weighted_accuracy = df.groupby('scene_id')['accuracy_weighted'].mean().reset_index()
-
-    # Plot mean weighted accuracy for each scene
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x='scene_id', y='accuracy_weighted', data=mean_weighted_accuracy)
-    plt.title('Mean Weighted Accuracy for Each Scene')
-    plt.xlabel('Scene ID')
-    plt.ylabel('Mean Weighted Accuracy')
-    plt.ylim(0, 1)
-    plt.savefig(f'logs/{run_name}/mean_weighted_accuracy.png')
-    plt.close()
-
-
-    mean_icl_accuracy = df.groupby('icl')['accuracy_weighted'].mean().reset_index()
-
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x='icl', y='accuracy_weighted', data=mean_icl_accuracy)
-    plt.title('Mean Weighted Accuracy across icl')
-    plt.xlabel('num_icl')
-    plt.ylabel('Mean Weighted Accuracy')
-    plt.ylim(0, 1)
-    plt.savefig(f'logs/{run_name}/mean_icl_accuracy.png')
-    plt.close()
-
-    df.to_pickle(f'logs/{run_name}/df_results.pkl')
+def draw_arrows(rgb_image, agent_state, points=None, font_scale=1.9, font_thickness=3):
+    origin_point = [0, 0, 0]
+    if points is None:
+        points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_color = (0, 0, 0)  # Black color in BGR for the text
+    circle_color = (255, 255, 255)  # White color in BGR for the circle
+    start_p = agent_frame_to_image_coords(origin_point, agent_state)
+    action = 1
+    for mag, theta in points:
+        cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
+        end_p = agent_frame_to_image_coords(cart, agent_state)
+        arrow_color = (255, 0, 0)  
+        cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.05)
+        text = str(action)
+        (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+        circle_center = (end_p[0], end_p[1])
+        circle_radius = max(text_width, text_height) // 2 + 15
+        cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
+        text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
+        cv2.putText(rgb_image, text, text_position, font, font_scale, text_color, font_thickness)
+        action += 1

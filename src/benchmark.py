@@ -39,8 +39,8 @@ class SpatialBenchmark:
     def evaluate_vlm_distance(self, context, log_freq, image_id):
         obj1, obj2 = context['annotations']
         image = context['image']
-        prompt = f"You are an embodied agent looking at your surrounding environment. Based on your existing knowledge of typical room layouts and the typical size of visable objects, do your best to estimate in meters the distance between the {obj1['obj']} and the {obj2['obj']}, which are both labeled for you. For reference you are 1.5 meters off the ground. Additionally, rate the difficulty of these specific objects of 1 to 5, where 1 is a confident estimate and 5 is a complete guess"
-        prompt += "\nLastly, Return your answer as a JSON object in the following format {distance: <distance>, difficulty: <confidence>}"
+        prompt = f"You are an embodied agent looking at your surrounding environment. Based on your existing knowledge of typical room layouts and the typical size of visable objects, do your best to estimate in meters the distance between the {obj1['obj']} and the {obj2['obj']}, which are both labeled for you. For reference you are 1.5 meters off the ground. Additionally, give us your confidence in your answer for these specific objectson a scale from 1 to 10, where 1 is a complete guess and 10 is very confident."
+        prompt += "\nReturn your answer as a JSON object in the following format: {'distance': <distance_value>, 'confidence': <confidence_value>}"
 
         response, performance = self.vlmAgent.call(image, prompt, 2)
         predictions = self.parse_response(response)
@@ -52,13 +52,15 @@ class SpatialBenchmark:
                 'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens'], 'itr': self.iterations, 'image_id': image_id}
         
         try:
+            predictions['distance'] = float(predictions['distance'])
+            predictions['confidence'] = float(predictions['confidence'])
             row['ground_truth'] = gt
             row['prediction'] = predictions['distance']
             row['mse'] = (gt - predictions['distance'])**2
             row['score'] = abs(gt - predictions['distance'])/gt
-            row['confidence'] = predictions['difficulty']
+            row['confidence'] = predictions['confidence']
 
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, ValueError) as e:
             print(e)    
             row['success'] = 0
             print("Error parsing VLM response, moving on")
@@ -116,7 +118,7 @@ class SpatialBenchmark:
             if random.random() > 1:
                 prompt += "Tell me your exact thought process as you examine the objects. "
 
-            prompt += f"At the very end of your response, output a JSON object in the following format: {num_samples} key pair(s) where each key corresponds to the number of the question it is answering. Each value should be a three item list, where the first element is either right or left the second is above or below and the third is in front or behind"
+            prompt += "At the very end of your response, output a JSON object in the following format: {1: <value>} where <value> is a three item list, where the first element is either right or left, the second is above or below, and the third is in front or behind"
                 #    f"\n{{1: ['right', 'above', 'behind'], 2: ['left', 'below', 'in front']}}\nNote that this example format would respond to 2 questions but in your response there should be exactly {num_samples} key-pairs and each key is the number of the question.")
         else:
             prompt += "For an example, here are some questions about the picture you see:"
@@ -138,7 +140,7 @@ class SpatialBenchmark:
                 prompt += "Reason through the task and describe the 3d layout of the image you see. "
             if random.random() > 0.3:
                 prompt += "Tell me your exact thought process as you examine the objects. "
-            prompt += (f"At the very end of your response, output a json object in the format shown above. Make sure there are exactly {num_samples} key-pairs and each key is the number of the question.")
+            prompt += (f"At the very end of your response, output a json object in the following format: Exactly {num_samples} key-pair and each key is the number of the question.")
 
         response, performance = self.vlmAgent.call(image, prompt, num_samples)
         predictions = self.parse_response(response)
@@ -148,7 +150,7 @@ class SpatialBenchmark:
                 'z_pts':0, 'z_pts_weighted':0, 'z_possible_pts_weighted':weights[:, 2].sum(),
                 'accuracy':0, 'accuracy_weighted':0, 'tokens_generated':performance['tokens_generated'], 
                 'num_samples':num_samples, 'num_objects':num_objects, 'success': 1, 'icl': num_icl,
-                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'], 'fov': context['fov'],
+                'speed': performance['tokens_generated']/performance['duration'], 'scene_id': context['scene_id'],
                 'model': self.vlmAgent.name, 'input_tokens': performance['input_tokens'], 'itr': self.iterations}
         try:
             for i in range(num_samples):

@@ -3,7 +3,7 @@ import argparse
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 from src.benchmark import *
-from src.llavaAgent import *
+from src.vlmAgent import *
 
 DEFAULT_CONFIG = {
     'headless': True,
@@ -12,8 +12,8 @@ DEFAULT_CONFIG = {
     'num_samples': {'max': 1, 'min': 1},
     'num_iterations': 200,
     'offline': True,
-    'vlm_cls': 'LLaVaAgent',
-    'vlm_kwargs': {'llm': 'mistral', 'size':'7b'},
+    'vlm_cls': 'LlavaAgent',
+    'vlm_kwargs': {'name': '8b'},
     'log_freq': 10,
     'icl': {'max':0, 'min': 0},
     'shuffle': False,
@@ -34,7 +34,6 @@ if __name__ == '__main__':
     sim_kwargs = {'scene_path': 'datasets/hm3d/minival/00808-y9hTuugGdiq/y9hTuugGdiq.basis.glb',
                   'scene_config': "datasets/hm3d/minival/hm3d_annotated_minival_basis.scene_dataset_config.json",
                   'resolution': config['resolution'], 'headless': config['headless']}
-    vlm_kwargs = {'llm': 'mistral', 'size':'7b'}
     vlm_cls = locals()[config['vlm_cls']]
     vlm_agent = vlm_cls(**config['vlm_kwargs'])
 

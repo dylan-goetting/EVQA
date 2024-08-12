@@ -1,6 +1,7 @@
 import pdb
 from collections import Counter
 from random import shuffle
+import random
 
 from habitat_sim.utils.common import quat_from_angle_axis, quat_to_angle_axis
 import habitat_sim
@@ -46,12 +47,14 @@ class AnnotatedSimulator:
         sem_cfg.uuid = "semantic"
         sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
         sem_cfg.resolution = [240, 320]
+        sem_cfg.orientation = mn.Vector3([-0.4, 0, 0])
 
         rgb_sensor_spec = habitat_sim.CameraSensorSpec()
         rgb_sensor_spec.uuid = "color_sensor"
         rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
         rgb_sensor_spec.resolution = self.RESOLUTION
         rgb_sensor_spec.hfov = fov 
+        rgb_sensor_spec.orientation = mn.Vector3([-0.4, 0, 0])
 
         self.focal_length = calculate_focal_length(fov, rgb_sensor_spec.resolution[1])
 
@@ -143,38 +146,35 @@ class AnnotatedSimulator:
     def run_user_input(self):
         assert not self.headless
         while True:
-            if True: #self.steps > 0:
-                key = cv2.waitKey(0)
+            key = cv2.waitKey(0)
 
-                if key == ord("p"):
-                    pdb.set_trace()
+            if key == ord("p"):
+                pdb.set_trace()
 
-                elif key == ord('w'):
-                    rgb_image = self.move('move_z', 0.2)
-                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-                elif key == ord('a'):
-                    rgb_image = self.move('rotate', np.pi/16)
-                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-                elif key == ord('s'):
-                    rgb_image = self.move('move_z', -0.2)
-                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-                elif key == ord('d'):
-                    rgb_image = self.move('rotate', -np.pi/16)
-                    cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-                else:
-                    action = self.action_mapping.get(key, "move_forward")
-                    if action == "stop":
-                        break
-                    _ = self.step(action)
+            elif key == ord('w'):
+                rgb_image = self.move('move_z', 0.2)
+                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+            elif key == ord('a'):
+                rgb_image = self.move('rotate', np.pi/16)
+                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+            elif key == ord('s'):
+                rgb_image = self.move('move_z', -0.2)
+                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+            elif key == ord('d'):
+                rgb_image = self.move('rotate', -np.pi/16)
+                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
             else:
-                pass
-                # _ = self.step('move_forward')
-
+                action = self.action_mapping.get(key, "move_forward")
+                if action == "stop":
+                    break
         self.sim.close()
         cv2.destroyAllWindows()
 
-    def move(self, action, magnitude):
+    
+    def move(self, action, magnitude, noise=False):
         assert action in ['forward', 'rotate']
+        if noise:
+            action = action*random.normalvariate(1, 0.2)
 
         curr_state = self.sim.get_agent(0).get_state()
         curr_position = curr_state.position
@@ -192,7 +192,8 @@ class AnnotatedSimulator:
             local_point = np.array([0, 0, -magnitude])
         
             global_p = local_to_global(curr_position, curr_quat, local_point)
-                        
+            global_p = self.sim.pathfinder.snap_point(global_p)
+
             new_agent_state.position = self.sim.pathfinder.try_step(curr_position, global_p)
             
         elif action == 'rotate':
@@ -206,7 +207,7 @@ class AnnotatedSimulator:
         rgb_image = observations["color_sensor"]
         sem_image = observations["semantic"]
 
-        return observations
+        return {'image': rgb_image}
 
     def step(self, action, num_objects=4, annotate_image=False):
         if action == 'r':
@@ -257,3 +258,11 @@ class AnnotatedSimulator:
 
         out['image'] = rgb_image
         return out
+
+    def get_all_objects(self, unique=True):
+        objects = self.sim.semantic_scene.objects
+        if unique:
+            counted_categories = Counter([a.category for a in objects])
+            return [obj for obj in objects if counted_categories[obj.category] == 1]
+                
+        return objects

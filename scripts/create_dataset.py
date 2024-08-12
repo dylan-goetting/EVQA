@@ -4,9 +4,8 @@ import argparse
 import os
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
-# print("Current Working Directory:", os.getcwd())
 from src.benchmark import *
-from src.llavaAgent import *
+from src.vlmAgent import *
 import h5py
 import pickle
 
@@ -40,7 +39,6 @@ if __name__ == '__main__':
         except:
             continue
     
-
     custom_dtype = np.dtype([
         ('image', np.uint8, (args.resolution[0], args.resolution[1], 4)),
         ('annotations', 'S5000'),  # JSON string, up to 1000 bytes

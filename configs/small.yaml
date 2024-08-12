@@ -12,14 +12,18 @@ num_samples:
 icl:  
   max: 0
   min: 0
-num_iterations: 100
-vlm_cls: LLaVaAgent
+num_iterations: 150
+vlm_cls: GeminiAgent
 vlm_kwargs:
-  llm: mistral
-  size: 7b
-  quantize: False
+  model: 'gemini-1.5-flash'
+  # name: 8b
+  # quantize: False
+  # device_map: Auto
+  # do_sample: True
+  # use_flash_attention_2: True
+
 data_path: 'explore'
-log_freq: 3
+log_freq: 5
 shuffle: True
 dynamic: True
 inner_loop: 1
