@@ -216,34 +216,3 @@ def make_gif(path):
 
     ani = animation.ArtistAnimation(fig, ims, interval=1, blit=True)
     HTML(ani.to_jshtml())
-
-def agent_frame_to_image_coords(self, point, agent_state):
-    global_point = local_to_global(agent_state.position, agent_state.rotation, point)
-    camera_state = agent_state.sensor_states['color_sensor']
-    camera_point = global_to_local(camera_state.position, camera_state.rotation, global_point)
-    xp, yp = self.project_2d(camera_point)
-
-    return xp, yp
-
-def draw_arrows(rgb_image, agent_state, points=None, font_scale=1.9, font_thickness=3):
-    origin_point = [0, 0, 0]
-    if points is None:
-        points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    text_color = (0, 0, 0)  # Black color in BGR for the text
-    circle_color = (255, 255, 255)  # White color in BGR for the circle
-    start_p = agent_frame_to_image_coords(origin_point, agent_state)
-    action = 1
-    for mag, theta in points:
-        cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
-        end_p = agent_frame_to_image_coords(cart, agent_state)
-        arrow_color = (255, 0, 0)  
-        cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.05)
-        text = str(action)
-        (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-        circle_center = (end_p[0], end_p[1])
-        circle_radius = max(text_width, text_height) // 2 + 15
-        cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
-        text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
-        cv2.putText(rgb_image, text, text_position, font, font_scale, text_color, font_thickness)
-        action += 1

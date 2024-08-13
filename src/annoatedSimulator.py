@@ -2,20 +2,17 @@ import pdb
 from collections import Counter
 from random import shuffle
 import random
-
 from habitat_sim.utils.common import quat_from_angle_axis, quat_to_angle_axis
 import habitat_sim
 import cv2
 import numpy as np
 import magnum as mn
-
 from src.utils import *
-
 
 class AnnotatedSimulator:
 
     def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, 
-                 verbose=False, scene_id=None):
+                 verbose=False, scene_id=None, sensors=['center']):
 
         self.scene_id = scene_id
         self.verbose = verbose
@@ -26,44 +23,52 @@ class AnnotatedSimulator:
             ord('a'): "turn_left",
             ord('d'): "turn_right",
             ord('q'): "stop",
-            ord('r'): "random"
+            ord('r'): "r"
         }
         self.RESOLUTION = resolution
         self.show_semantic = show_semantic
         self.headless = headless
+        self.sensors = sensors
         if not self.headless:
-            cv2.namedWindow("RGB View", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("RGB View", self.RESOLUTION[1], self.RESOLUTION[0])
+            for sensor in sensors:
+                cv2.namedWindow(f"RGB View {sensor}", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(f"RGB View {sensor}", self.RESOLUTION[1]//3, self.RESOLUTION[0]//3)
+
 
         if show_semantic:
-            cv2.namedWindow("Semantic View", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Semantic View", self.RESOLUTION[1], self.RESOLUTION[0])
+            for sensor in sensors:
+                cv2.namedWindow(f"Semantic View {sensor}", cv2.WINDOW_NORMAL)
+                cv2.resizeWindow(f"Semantic View {sensor}", self.RESOLUTION[1], self.RESOLUTION[0])
+
         backend_cfg = habitat_sim.SimulatorConfiguration()
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
         backend_cfg.enable_physics = True
         backend_cfg.random_seed = 100
-        sem_cfg = habitat_sim.CameraSensorSpec()
-        sem_cfg.uuid = "semantic"
-        sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
-        sem_cfg.resolution = [240, 320]
-        sem_cfg.orientation = mn.Vector3([-0.4, 0, 0])
-
-        rgb_sensor_spec = habitat_sim.CameraSensorSpec()
-        rgb_sensor_spec.uuid = "color_sensor"
-        rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
-        rgb_sensor_spec.resolution = self.RESOLUTION
-        rgb_sensor_spec.hfov = fov 
-        rgb_sensor_spec.orientation = mn.Vector3([-0.4, 0, 0])
-
-        self.focal_length = calculate_focal_length(fov, rgb_sensor_spec.resolution[1])
 
         agent_cfg = habitat_sim.agent.AgentConfiguration()
-        agent_cfg.sensor_specifications = [sem_cfg, rgb_sensor_spec]
+        agent_cfg.sensor_specifications = []
 
+        for sensor in sensors:
+            
+            sem_cfg = habitat_sim.CameraSensorSpec()
+            sem_cfg.uuid = f"semantic_sensor_{sensor}"
+            sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
+            sem_cfg.resolution = [240, 320]
+
+            sem_cfg.orientation = mn.Vector3([-0.4, sensor, 0])
+            agent_cfg.sensor_specifications.append(sem_cfg)
+            rgb_sensor_spec = habitat_sim.CameraSensorSpec()
+            rgb_sensor_spec.uuid = f"color_sensor_{sensor}"
+            rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
+            rgb_sensor_spec.resolution = self.RESOLUTION
+            rgb_sensor_spec.hfov = fov            
+            rgb_sensor_spec.orientation = mn.Vector3([-0.4, sensor, 0])
+            agent_cfg.sensor_specifications.append(rgb_sensor_spec)
+
+        self.focal_length = calculate_focal_length(fov, self.RESOLUTION[1])
         self.sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
         self.sim = habitat_sim.Simulator(self.sim_cfg)
-        self.camera = self.sim.agents[0]._sensors['color_sensor']
 
     def filter_objects(self, sem_image, sensor_state, max_objects=5):
         obj_ids = Counter(sem_image.flatten())
@@ -133,7 +138,7 @@ class AnnotatedSimulator:
         font_scale = 0.85
         font_color = (0, 0, 0)
         font_thickness = 1
-        text_size, baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+        text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
         text_x = int(x_pixel - text_size[0] // 2)
         text_y = int(y_pixel + text_size[1] + 10)
         rect_top_left = (text_x-3, text_y - text_size[1])  # Top-left corner
@@ -143,30 +148,53 @@ class AnnotatedSimulator:
         cv2.rectangle(img, rect_top_left, rect_bottom_right, (255, 255, 255), -1)
         cv2.putText(img, label, (text_x, text_y), font, font_scale, font_color, font_thickness)
 
-    def run_user_input(self):
+    def move_choices(self, action, points=None):
+        if points is not None:
+            try:
+                action = int(action)
+                if action == -1:
+                    print("DEFAULTING ACTION")
+                    return (['forward' , 0.2],)
+                if action <= len(points):
+                    mag, theta = points[action-1]
+                    return (['rotate', -theta], ['forward', 1.5],)
+                elif action == 6:
+                    return (['rotate', np.pi],)
+                elif action == 7:
+                    return (['forward', -1.5],)
+                elif action == 8:
+                    print('MODEL THINKS DONE')
+                    return (['forward' , 0.2],)
+            except:
+                pass
+        if action == 'w':
+            return [('forward', 0.2)]
+        elif action == 'a':
+            return [('rotate', np.pi/16)]
+        elif action == 's':
+            return [('forward', -0.2)]
+        elif action == 'd':
+            return [('rotate', -np.pi/16)]
+        elif action == 'r':
+            return 'r'
+        
+
+        print("DEFAULTING ACTION")
+        return (['forward' , 0.2],)
+    
+    def run_user_input(self, arrows=False, points=None, annotate_image=False):
         assert not self.headless
         while True:
             key = cv2.waitKey(0)
-
-            if key == ord("p"):
+            key = chr(key)
+            if key == "p":
                 pdb.set_trace()
+            elif key == 'q':
+                break
+            actions = self.move_choices(key, points)
+            # actual_key = self.action_mapping.get(key, 'move_forward')
+            _ = self.step(actions, num_objects=2, annotate_image=annotate_image, draw_arrows=points)
 
-            elif key == ord('w'):
-                rgb_image = self.move('move_z', 0.2)
-                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-            elif key == ord('a'):
-                rgb_image = self.move('rotate', np.pi/16)
-                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-            elif key == ord('s'):
-                rgb_image = self.move('move_z', -0.2)
-                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-            elif key == ord('d'):
-                rgb_image = self.move('rotate', -np.pi/16)
-                cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
-            else:
-                action = self.action_mapping.get(key, "move_forward")
-                if action == "stop":
-                    break
         self.sim.close()
         cv2.destroyAllWindows()
 
@@ -204,14 +232,11 @@ class AnnotatedSimulator:
         self.sim.get_agent(0).set_state(new_agent_state)
         observations = self.sim.get_sensor_observations()
 
-        rgb_image = observations["color_sensor"]
-        sem_image = observations["semantic"]
+        return observations
 
-        return {'image': rgb_image}
+    def step(self, actions, num_objects=4, annotate_image=False, draw_arrows=[]):
 
-    def step(self, action, num_objects=4, annotate_image=False):
-        if action == 'r':
-
+        if actions == 'r':
             random_point = self.sim.pathfinder.get_random_navigable_point()
             random_yaw = np.random.uniform(0, 2 * np.pi)
             random_orientation = quat_from_angle_axis(random_yaw, np.array([0, 1, 0]))
@@ -222,41 +247,42 @@ class AnnotatedSimulator:
             observations = self.sim.get_sensor_observations()
     
         else:
-            observations = self.sim.step(action)
+            for a1, a2 in actions:
+                observations = self.move(a1, a2)
 
         agent_state = self.sim.get_agent(0).get_state()
+        all_out = {}
+        for sensor in self.sensors:
+            sem_image = observations[f"semantic_sensor_{sensor}"]
+            self.filtered_objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
+                                                max_objects=num_objects)
+            out = {'annotations': [], 'agent_state': agent_state}
+            for obj, _ in self.filtered_objects:
+                local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
+                                                        agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
+                                                        obj.aabb.center), 3)
+                obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords}
+                out['annotations'].append(obj_wrapped)
+                if self.verbose:
+                    print(
+                        f"[Notable Objects] Object ID: {obj.semantic_id}, Category: {obj.category.name()}, "
+                        f"local coords: {local_coords}")
+                if annotate_image:
+                    self.annotate_image(observations[f'color_sensor_{sensor}'], obj_wrapped)
+            if draw_arrows:
+                self.draw_arrows(observations[f'color_sensor_{sensor}'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], points=draw_arrows)
 
-        rgb_image = observations["color_sensor"]
-        sem_image = observations["semantic"]
+            if not self.headless:
+                cv2.imshow(f"RGB View {sensor}", cv2.cvtColor(observations[f'color_sensor_{sensor}'], cv2.COLOR_RGB2BGR))
 
-        if self.verbose:
-            print("Agent position:", agent_state.position)
-            # print("Agent rotation:", agent_state.rotation)
-        self.filtered_objects = self.filter_objects(sem_image, agent_state.sensor_states['color_sensor'],
-                                            max_objects=num_objects)
-        out = {'annotations': [], 'agent_state': agent_state}
-        for obj, _ in self.filtered_objects:
-            local_coords = np.round(global_to_local(agent_state.sensor_states['color_sensor'].position,
-                                                    agent_state.sensor_states['color_sensor'].rotation,
-                                                    obj.aabb.center), 3)
-            obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords}
-            out['annotations'].append(obj_wrapped)
-            if self.verbose:
-                print(
-                    f"[Notable Objects] Object ID: {obj.semantic_id}, Category: {obj.category.name()}, "
-                    f"local coords: {local_coords}")
-            if annotate_image:
-                self.annotate_image(rgb_image, obj_wrapped)
-        if not self.headless:
-            cv2.imshow("RGB View", cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR))
+            if self.show_semantic:
+                sem_image_visual = (sem_image % 40) * 255 / 40  # Scale semantic labels to visible range
+                sem_image_visual = sem_image_visual.astype(np.uint8)
+                cv2.imshow(f"Semantic View  {sensor}", sem_image_visual)
+            self.steps += 1
 
-        if self.show_semantic:
-            sem_image_visual = (sem_image % 40) * 255 / 40  # Scale semantic labels to visible range
-            sem_image_visual = sem_image_visual.astype(np.uint8)
-            cv2.imshow("Semantic View", sem_image_visual)
-        self.steps += 1
-
-        out['image'] = rgb_image
+            out.update(observations)
+            all_out['color_sensor_{sensor}'] = out
         return out
 
     def get_all_objects(self, unique=True):
@@ -266,3 +292,38 @@ class AnnotatedSimulator:
             return [obj for obj in objects if counted_categories[obj.category] == 1]
                 
         return objects
+
+    def agent_frame_to_image_coords(self, point, agent_state, camera_state):
+        global_point = local_to_global(agent_state.position, agent_state.rotation, point)
+        camera_point = global_to_local(camera_state.position, camera_state.rotation, global_point)
+        if camera_point[2] > 0:
+            return None
+        xp, yp = self.project_2d(camera_point)
+        return xp, yp
+
+    def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=1.9, font_thickness=3):
+        origin_point = [0, 0, 0]
+        if points is None:
+            points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text_color = (0, 0, 0)  # Black color in BGR for the text
+        circle_color = (255, 255, 255)  # White color in BGR for the circle
+
+        start_p = self.agent_frame_to_image_coords(origin_point, agent_state, camera_state)
+        action = 1
+        for mag, theta in points:
+            cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
+            end_p = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
+            if end_p is None:
+                action += 1
+                continue
+            arrow_color = (255, 0, 0)  
+            cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.05)
+            text = str(action)
+            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+            circle_center = (end_p[0], end_p[1])
+            circle_radius = max(text_width, text_height) // 2 + 15
+            cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
+            text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
+            cv2.putText(rgb_image, text, text_position, font, font_scale, text_color, font_thickness)
+            action += 1
