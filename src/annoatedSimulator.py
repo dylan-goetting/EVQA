@@ -12,11 +12,10 @@ from src.utils import *
 class AnnotatedSimulator:
 
     def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, 
-                 verbose=False, scene_id=None, sensors=['center']):
+                 verbose=False, scene_id=None, sensors=['center'], random_seed=100):
 
         self.scene_id = scene_id
         self.verbose = verbose
-        self.filtered_objects = []
         self.steps = 0
         self.action_mapping = {
             ord('w'): "move_forward",
@@ -44,11 +43,12 @@ class AnnotatedSimulator:
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
         backend_cfg.enable_physics = True
-        backend_cfg.random_seed = 100
+        backend_cfg.random_seed = random_seed
 
         agent_cfg = habitat_sim.agent.AgentConfiguration()
         agent_cfg.sensor_specifications = []
-
+        self.fov = fov
+        
         for sensor in sensors:
             
             sem_cfg = habitat_sim.CameraSensorSpec()
@@ -133,9 +133,8 @@ class AnnotatedSimulator:
         x_pixel, y_pixel = self.project_2d(obj_wrapped['curr_local_coords'])
         label = f'{obj_wrapped["obj"]}'
         # Assuming you have an image captured from the sensor
-        cv2.circle(img, (x_pixel, y_pixel), 4, (255, 0, 0), -1)
         font = cv2.FONT_HERSHEY_DUPLEX
-        font_scale = 0.85
+        font_scale = 0.85     
         font_color = (0, 0, 0)
         font_thickness = 1
         text_size, _ = cv2.getTextSize(label, font, font_scale, font_thickness)
@@ -144,10 +143,16 @@ class AnnotatedSimulator:
         rect_top_left = (text_x-3, text_y - text_size[1])  # Top-left corner
         rect_bottom_right = (text_x + text_size[0], text_y + 3)  # Bottom-right corner
 
-        # Draw the rectangle to highlight the background
-        cv2.rectangle(img, rect_top_left, rect_bottom_right, (255, 255, 255), -1)
-        cv2.putText(img, label, (text_x, text_y), font, font_scale, font_color, font_thickness)
-
+        # Check if the annotation is within the image bounds
+        if 0 <= x_pixel < img.shape[1] and 0 <= y_pixel < img.shape[0] and 0 <= rect_top_left[0] < img.shape[1] and 0 <= rect_top_left[1] < img.shape[0] and 0 <= rect_bottom_right[0] < img.shape[1] and 0 <= rect_bottom_right[1] < img.shape[0]:
+            # Draw the rectangle to highlight the background
+            cv2.circle(img, (x_pixel, y_pixel), 4, (255, 0, 0), -1)
+            cv2.rectangle(img, rect_top_left, rect_bottom_right, (255, 255, 255), -1)
+            cv2.putText(img, label, (text_x, text_y), font, font_scale, font_color, font_thickness)
+            return True
+        
+        return False
+    
     def move_choices(self, action, points=None):
         if points is not None:
             try:
@@ -220,7 +225,7 @@ class AnnotatedSimulator:
             local_point = np.array([0, 0, -magnitude])
         
             global_p = local_to_global(curr_position, curr_quat, local_point)
-            global_p = self.sim.pathfinder.snap_point(global_p)
+            #global_p = self.sim.pathfinder.snap_point(global_p)
 
             new_agent_state.position = self.sim.pathfinder.try_step(curr_position, global_p)
             
@@ -234,7 +239,7 @@ class AnnotatedSimulator:
 
         return observations
 
-    def step(self, actions, num_objects=4, annotate_image=False, draw_arrows=[]):
+    def step(self, actions, num_objects=4, annotate_image=False, draw_arrows=[], objects_to_annotate=[]):
 
         if actions == 'r':
             random_point = self.sim.pathfinder.get_random_navigable_point()
@@ -253,24 +258,38 @@ class AnnotatedSimulator:
         agent_state = self.sim.get_agent(0).get_state()
         all_out = {}
         for sensor in self.sensors:
-            sem_image = observations[f"semantic_sensor_{sensor}"]
-            self.filtered_objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
-                                                max_objects=num_objects)
             out = {'annotations': [], 'agent_state': agent_state}
-            for obj, _ in self.filtered_objects:
-                local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
-                                                        agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
-                                                        obj.aabb.center), 3)
-                obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords}
-                out['annotations'].append(obj_wrapped)
-                if self.verbose:
-                    print(
-                        f"[Notable Objects] Object ID: {obj.semantic_id}, Category: {obj.category.name()}, "
-                        f"local coords: {local_coords}")
+            sem_image = observations[f"semantic_sensor_{sensor}"]
+
+            if objects_to_annotate == []:
+                objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
+                                                max_objects=num_objects)
+            else:
+                objects = []
+                for obj_id in objects_to_annotate:
+                    obj = self.sim.semantic_scene.objects[obj_id]
+                    local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
+                                                            agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
+                                                            obj.aabb.center), 3)
+                    objects.append([obj, local_coords])
+
+            for obj, local_coords in objects:
                 if annotate_image:
-                    self.annotate_image(observations[f'color_sensor_{sensor}'], obj_wrapped)
+                    sucess = self.annotate_image(observations[f'color_sensor_{sensor}'], obj_wrapped)
+                    if sucess:
+                        obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords, 'obj_id': obj.id}
+                        out['annotations'].append(obj_wrapped)
             if draw_arrows:
                 self.draw_arrows(observations[f'color_sensor_{sensor}'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], points=draw_arrows)
+                img = observations[f'color_sensor_{sensor}']
+                if sensor == 0:
+                    name = 'center'
+                elif sensor > 0:
+                    name = 'left'
+                else:
+                    name = 'right'
+                if len(self.sensors) > 1:
+                    cv2.putText(img, f"{name.upper()} SENSOR", (int(img.shape[1]/2 - 100), 70), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 3)
 
             if not self.headless:
                 cv2.imshow(f"RGB View {sensor}", cv2.cvtColor(observations[f'color_sensor_{sensor}'], cv2.COLOR_RGB2BGR))
@@ -281,9 +300,9 @@ class AnnotatedSimulator:
                 cv2.imshow(f"Semantic View  {sensor}", sem_image_visual)
             self.steps += 1
 
-            out.update(observations)
-            all_out['color_sensor_{sensor}'] = out
-        return out
+            out['image'] = observations[f'color_sensor_{sensor}']
+            all_out[f'color_sensor_{sensor}'] = out
+        return all_out
 
     def get_all_objects(self, unique=True):
         objects = self.sim.semantic_scene.objects
@@ -301,7 +320,7 @@ class AnnotatedSimulator:
         xp, yp = self.project_2d(camera_point)
         return xp, yp
 
-    def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=1.9, font_thickness=3):
+    def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=3, font_thickness=4):
         origin_point = [0, 0, 0]
         if points is None:
             points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
