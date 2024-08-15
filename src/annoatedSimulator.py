@@ -28,6 +28,8 @@ class AnnotatedSimulator:
         self.show_semantic = show_semantic
         self.headless = headless
         self.sensors = sensors
+        self.bad_categories = ['floor', 'wall', 'ceiling', 'Unknown', 'unknown', 'surface', 'beam', 'board', 'door', 'door frame', 'door window']
+
         if not self.headless:
             for sensor in sensors:
                 cv2.namedWindow(f"RGB View {sensor}", cv2.WINDOW_NORMAL)
@@ -48,13 +50,14 @@ class AnnotatedSimulator:
         agent_cfg = habitat_sim.agent.AgentConfiguration()
         agent_cfg.sensor_specifications = []
         self.fov = fov
-        
+        self.sem_res = [240, 320]
         for sensor in sensors:
             
             sem_cfg = habitat_sim.CameraSensorSpec()
             sem_cfg.uuid = f"semantic_sensor_{sensor}"
             sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
             sem_cfg.resolution = [240, 320]
+            sem_cfg.hfov = fov
 
             sem_cfg.orientation = mn.Vector3([-0.4, sensor, 0])
             agent_cfg.sensor_specifications.append(sem_cfg)
@@ -70,19 +73,28 @@ class AnnotatedSimulator:
         self.sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
         self.sim = habitat_sim.Simulator(self.sim_cfg)
 
+        # pts = []
+        # for _ in range(25):
+        #     pts.append(self.sim.pathfinder.get_random_navigable_point()[1])
+        # dif = max(pts) - min(pts)
+        # if dif > 2:
+        #     self.floors = 2
+        # else:
+        #     self.floors = 1
+        # print(self.floors)
+
     def filter_objects(self, sem_image, sensor_state, max_objects=5):
         obj_ids = Counter(sem_image.flatten())
         objects = [self.sim.semantic_scene.objects[i] for i in obj_ids.keys()]
         #shuffle(objects)
         filtered = []
-        bad_categories = ['floor', 'wall', 'ceiling', 'Unknown', 'unknown', 'surface']
         counted_categories = Counter([a.category for a in objects])
 
         for obj in objects:
 
             if len(filtered) == max_objects:
                 break
-            if obj.category.name() in bad_categories:
+            if obj.category.name() in self.bad_categories:
                 continue
             if counted_categories[obj.category] > 1:
                 continue
@@ -97,26 +109,32 @@ class AnnotatedSimulator:
                 continue
             valid = True
             if len(filtered) > 0:
-                for _, (xp, yp) in filtered:
+                for _, (xp, yp), _ in filtered:
                     if abs(xp - x_p) < 300 and abs(yp - y_p) < 100:
                         valid = False
                         break
             if not valid:
                 continue
+            
+            if not self.can_see(obj, sensor_state):
+                continue
 
-            ray = habitat_sim.geo.Ray(sensor_state.position, obj.aabb.center - sensor_state.position)
-            max_distance = 100.0  # Set a max distance for the ray
-            raycast_results = self.sim.cast_ray(ray, max_distance)
-            if raycast_results.has_hits():
-                distance = np.linalg.norm(global_to_local(sensor_state.position, sensor_state.rotation, raycast_results.hits[0].point))
-                com_distance = np.linalg.norm(local_pt)
-                error = abs(distance-com_distance)/distance
-                if error > 0.1:
-                    continue
-
-            filtered.append([obj, (x_p, y_p)])
+            filtered.append([obj, (x_p, y_p), local_pt])
 
         return filtered
+    
+    def can_see(self, obj, sensor_state):
+        local_pt = global_to_local(sensor_state.position, sensor_state.rotation, obj.aabb.center)
+        ray = habitat_sim.geo.Ray(sensor_state.position, obj.aabb.center - sensor_state.position)
+        max_distance = 100.0  # Set a max distance for the ray
+        raycast_results = self.sim.cast_ray(ray, max_distance)
+        if raycast_results.has_hits():
+            distance = np.linalg.norm(global_to_local(sensor_state.position, sensor_state.rotation, raycast_results.hits[0].point))
+            com_distance = np.linalg.norm(local_pt)
+            error = abs(distance-com_distance)/distance
+            if error < 0.1:
+                return True
+        return False
 
     def project_2d(self, local_point):
 
@@ -182,12 +200,14 @@ class AnnotatedSimulator:
             return [('rotate', -np.pi/16)]
         elif action == 'r':
             return 'r'
+        elif action == 'l':
+            return 'l'
         
 
         print("DEFAULTING ACTION")
         return (['forward' , 0.2],)
     
-    def run_user_input(self, arrows=False, points=None, annotate_image=False):
+    def run_user_input(self, arrows=False, points=None, annotate_image=False, num_objects=2, objects_to_annotate=[]):
         assert not self.headless
         while True:
             key = cv2.waitKey(0)
@@ -198,11 +218,17 @@ class AnnotatedSimulator:
                 break
             actions = self.move_choices(key, points)
             # actual_key = self.action_mapping.get(key, 'move_forward')
-            _ = self.step(actions, num_objects=2, annotate_image=annotate_image, draw_arrows=points)
+            _ = self.step(actions, num_objects=num_objects, annotate_image=annotate_image, draw_arrows=points, objects_to_annotate=objects_to_annotate)
 
         self.sim.close()
         cv2.destroyAllWindows()
 
+    def search_objects(self, name="", exact=True):
+        all_objects = self.get_all_objects(unique=False)
+        if exact:
+            return [obj for obj in all_objects if obj.category.name() == name]
+        else:
+            return [obj for obj in all_objects if name in obj.category.name()]
     
     def move(self, action, magnitude, noise=False):
         assert action in ['forward', 'rotate']
@@ -250,12 +276,15 @@ class AnnotatedSimulator:
             agent_state.rotation = random_orientation
             self.sim.get_agent(0).set_state(agent_state)
             observations = self.sim.get_sensor_observations()
-    
+
+        elif actions == 'l':
+            pass
         else:
             for a1, a2 in actions:
                 observations = self.move(a1, a2)
 
         agent_state = self.sim.get_agent(0).get_state()
+        
         all_out = {}
         for sensor in self.sensors:
             out = {'annotations': [], 'agent_state': agent_state}
@@ -265,21 +294,31 @@ class AnnotatedSimulator:
                 objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
                                                 max_objects=num_objects)
             else:
+                sem_image_set = set(sem_image.flatten())
+
                 objects = []
                 for obj_id in objects_to_annotate:
                     obj = self.sim.semantic_scene.objects[obj_id]
                     local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
                                                             agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
                                                             obj.aabb.center), 3)
-                    objects.append([obj, local_coords])
-
-            for obj, local_coords in objects:
-                if annotate_image:
+                    if local_coords[2] < 0 and obj_id in sem_image_set:
+                        objects.append([obj, None, local_coords])
+                    
+            annotated = 0
+            for obj, _, local_coords in objects:
+                obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords, 'obj_id': obj.semantic_id}
+                if annotate_image:  
                     sucess = self.annotate_image(observations[f'color_sensor_{sensor}'], obj_wrapped)
                     if sucess:
-                        obj_wrapped = {'obj': obj.category.name(), 'curr_local_coords': local_coords, 'obj_id': obj.id}
                         out['annotations'].append(obj_wrapped)
-            if draw_arrows:
+                        annotated += 1
+                    if annotated >= num_objects:
+                        break
+                else:
+                    out['annotations'].append(obj_wrapped)
+
+            if draw_arrows: 
                 self.draw_arrows(observations[f'color_sensor_{sensor}'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], points=draw_arrows)
                 img = observations[f'color_sensor_{sensor}']
                 if sensor == 0:
@@ -301,18 +340,33 @@ class AnnotatedSimulator:
                 sem_image_visual = sem_image_visual.astype(np.uint8)
                 cv2.imshow(f"Semantic View  {sensor}", sem_image_visual)
             self.steps += 1
-
+            # closest = self.get_closest_objects([observations[f"semantic_sensor_{sensor}"] for sensor in self.sensors], agent_state, num_objects=num_objects)
+            # print('closest', [c.category.name() for c, _ in closest])
             out['image'] = observations[f'color_sensor_{sensor}']
             all_out[f'color_sensor_{sensor}'] = out
         return all_out
 
-    def get_all_objects(self, unique=True):
-        objects = self.sim.semantic_scene.objects
-        if unique:
-            counted_categories = Counter([a.category for a in objects])
-            return [obj for obj in objects if counted_categories[obj.category] == 1]
+    def get_all_objects(self, filter=True, instances=(2, 15)):
+        if filter:
+            objects = [obj for obj in self.sim.semantic_scene.objects if obj.category.name() not in self.bad_categories]
+        else:
+            objects = self.sim.semantic_scene.objects
+        counted_categories = Counter([a.category.name() for a in objects])
+        #print(counted_categories.keys())
+        return [obj for obj in objects if (counted_categories[obj.category.name()] >= instances[0] and counted_categories[obj.category.name()] <= instances[1])]
                 
-        return objects
+    def get_closest_objects(self, semanic_images, agent_state, num_objects=5):
+        for sem_image in semanic_images:
+            obj_ids = set(sem_image.flatten())
+            objects = [self.sim.semantic_scene.objects[i] for i in obj_ids]
+            filtered = []
+            for obj in objects:
+                if obj.category.name() in self.bad_categories:
+                    continue
+                distance = np.linalg.norm(obj.aabb.center - agent_state.position)
+                filtered.append([obj, distance])
+        filtered.sort(key=lambda x: x[1])
+        return filtered[0:num_objects]
 
     def agent_frame_to_image_coords(self, point, agent_state, camera_state):
         global_point = local_to_global(agent_state.position, agent_state.rotation, point)
