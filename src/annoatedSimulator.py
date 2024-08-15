@@ -289,7 +289,9 @@ class AnnotatedSimulator:
                 else:
                     name = 'right'
                 if len(self.sensors) > 1:
-                    cv2.putText(img, f"{name.upper()} SENSOR", (int(img.shape[1]/2 - 100), 70), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 3)
+                    text_size, _ = cv2.getTextSize(f"{name.upper()} SENSOR", cv2.FONT_HERSHEY_SIMPLEX, 2.5, 3)
+                    text_x = int((img.shape[1] - text_size[0]) / 2)
+                    cv2.putText(img, f"{name.upper()} SENSOR", (text_x, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
 
             if not self.headless:
                 cv2.imshow(f"RGB View {sensor}", cv2.cvtColor(observations[f'color_sensor_{sensor}'], cv2.COLOR_RGB2BGR))
