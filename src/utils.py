@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from IPython.display import HTML
 import matplotlib.animation as animation
+from torch import mul
 
 
 def local_to_global(p, q, local_point):
@@ -114,10 +115,12 @@ def plot_groupby(df, groupby, var, std=True, title=''):
     # Create a bar plot with error bars
     plt.figure(figsize=(10, 6))
     if std:
-        plt.bar(mean_accuracy.index, mean_accuracy, yerr=std_accuracy, capsize=5)
+        plt.bar(range(len(mean_accuracy)), mean_accuracy, yerr=std_accuracy, capsize=5)
+        plt.xticks(range(len(mean_accuracy)), mean_accuracy.index)
         plt.title(f'Mean ± 1 SD of {var} vs groupby for {title}')   
     else:
-        plt.bar(mean_accuracy.index, mean_accuracy)
+        plt.bar(range(len(mean_accuracy)), mean_accuracy)
+        plt.xticks(range(len(mean_accuracy)), mean_accuracy.index)
         plt.title(f'Mean of {var} vs groupby for {title}')   
 
     plt.xlabel(groupby)
@@ -202,17 +205,32 @@ def plot_results(df, run_name):
     plt.title('Weighted Accuracy for x, y, z and Overall')
     plt.show()
 
-def make_gif(path):
+def gif(path):
     fig = plt.figure()
     ims = []
 
-    for i in range(len(listdir(path))-1):
-        np_img_i = cv2.imread(os.path.join(path,f"/step{i}/image.png"))
-        #change bgr to rgb
-        np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
+    for i in range(len(listdir(path))):
+        try:
+            ndx=0
+            if len(listdir(f"{path}/step{i}")) > 3:
+                ndx=1
+                
+            np_img_i = cv2.imread(f"{path}/step{i}/image{ndx}.png")
 
-        im = plt.imshow(np_img_i)
-        ims.append([im])
+            np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
 
-    ani = animation.ArtistAnimation(fig, ims, interval=1, blit=True)
+            im = plt.imshow(np_img_i)
+            ims.append([im])
+            np_img_i_copy = cv2.imread(f"{path}/step{i}/copy_image{ndx}.png")
+            np_img_i_copy = cv2.cvtColor(np_img_i_copy, cv2.COLOR_BGR2RGB)
+            im2 = plt.imshow(np_img_i_copy)
+            ims.append([im2])
+
+        except Exception as e:
+            print(f"Image step{i} not found")
+            continue
+
+    ani = animation.ArtistAnimation(fig, ims, interval=400, blit=True)
     HTML(ani.to_jshtml())
+    ani.save(f'{path}/animagion.gif', writer='imagemagick')
+

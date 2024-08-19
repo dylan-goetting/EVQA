@@ -1,0 +1,10 @@
+llava-v1.6-mistral-7b-hf/
+.idea/
+__pycache__/
+scenes/
+logs/
+.vscode/
+annotated_datasets/
+habitat-lab/
+testing/
+.env

@@ -183,13 +183,13 @@ class GeminiAgent(VLMAgent):
         )
         self.session = self.model.start_chat(history=[])
 
-    def call_chat(self, history, visual_prompt, text_prompt, add_timesteps_prompt=True, step=None):
-        if visual_prompt.shape[-1] == 4:
-            visual_prompt = visual_prompt[:, :, 0:3]
-        image = Image.fromarray(visual_prompt, mode='RGB') 
+    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None):
+        
+  
         try:
             t = time.time()
-            response = self.session.send_message([text_prompt, image])
+            #images = [genai.upload_file(im.tobytes()) for im in images]
+            response = self.session.send_message([text_prompt] + images)
             if len(self.session.history) > 2*history:
                 self.session.history = self.session.history[-2*history:]
             if add_timesteps_prompt:
