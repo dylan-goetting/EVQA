@@ -64,22 +64,30 @@ class AnnotatedSimulator:
         self.fov = fov
         self.sem_res = [240, 320]
         for sensor in sensors:
-            
+            pitch = -0.5
             sem_cfg = habitat_sim.CameraSensorSpec()
             sem_cfg.uuid = f"semantic_sensor_{sensor}"
             sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
             sem_cfg.resolution = [240, 320]
             sem_cfg.hfov = fov
-
-            sem_cfg.orientation = mn.Vector3([-0.5, sensor, 0])
+            sem_cfg.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(sem_cfg)
+
             rgb_sensor_spec = habitat_sim.CameraSensorSpec()
             rgb_sensor_spec.uuid = f"color_sensor_{sensor}"
             rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
             rgb_sensor_spec.resolution = self.RESOLUTION
             rgb_sensor_spec.hfov = fov            
-            rgb_sensor_spec.orientation = mn.Vector3([-0.5, sensor, 0])
+            rgb_sensor_spec.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(rgb_sensor_spec)
+
+            depth_sensor_spec = habitat_sim.CameraSensorSpec()
+            depth_sensor_spec.uuid = f"depth_sensor_{sensor}"
+            depth_sensor_spec.sensor_type = habitat_sim.SensorType.DEPTH
+            depth_sensor_spec.resolution = self.RESOLUTION
+            depth_sensor_spec.hfov = fov            
+            depth_sensor_spec.orientation = mn.Vector3([pitch, sensor, 0])
+            agent_cfg.sensor_specifications.append(depth_sensor_spec)
 
         self.focal_length = calculate_focal_length(fov, self.RESOLUTION[1])
         self.sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
@@ -414,6 +422,7 @@ class AnnotatedSimulator:
 
             out['image'] = observations[f'color_sensor_{sensor}']
             all_out[f'color_sensor_{sensor}'] = out
+            all_out[f'depth_sensor_{sensor}'] = observations[f'depth_sensor_{sensor}']
         return all_out
 
     def get_all_objects(self, filter=True, instances=None):
@@ -484,11 +493,12 @@ class AnnotatedSimulator:
         for mag, theta in points:
             action += 1
             cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
-            end_p, pos = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
+            out = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
+            if out is None:
+                continue
+            end_p, pos = out
             dist = np.linalg.norm(pos - agent_state.position)
 
-            if end_p is None:
-                continue
             angle = np.arctan2(end_p[1] - start_p[1], end_p[0] - start_p[0])
             if angles and min([abs(angle - ang) for ang in angles]) < 0.28:
                 continue

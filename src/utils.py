@@ -1,5 +1,8 @@
+from itertools import zip_longest
 from os import listdir
 import os
+import pdb
+from threading import local
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -9,10 +12,13 @@ import seaborn as sns
 from IPython.display import HTML
 import matplotlib.animation as animation
 from torch import mul
+import numpy as np
+import cv2
+from scipy.spatial.transform import Rotation as R
 
 
 def local_to_global(p, q, local_point):
-    local_rotated = quaternion.rotate_vectors(q, local_point)
+    local_rotated = quaternion.rotate_vectors(q, local_point, axis=-1)
 
     return local_rotated + p
 
@@ -101,6 +107,38 @@ def plot_heatmap(df, xvar, yvar, value):
     sns.heatmap(heatmap_data, annot=True, cmap='viridis', cbar_kws={'label': value})
     plt.title('Heatmap of Weighted Accuracy')
     plt.show()
+
+
+
+def depth_to_height1(depth_image, hfov, camera_position, camera_quaternion:quaternion.quaternion):
+    # print(camera_position, camera_quaternion)
+    H, W = depth_image.shape
+    focal_length_pixels = W / (2 * np.tan(np.radians(hfov / 2)))
+    i_indices, j_indices = np.indices((H, W))
+    x_prime = (j_indices - W / 2)
+    y_prime = (i_indices - H / 2)
+    
+    # fxy = np.sqrt(x_prime**2 + y_prime**2 + focal_length_pixels**2)
+    # x_local = x_prime * depth_image / fxy
+    # y_local = y_prime * depth_image / fxy
+    # z_local = np.sqrt(depth_image**2 - x_local**2 - y_local**2)
+
+    x_local = x_prime * depth_image / focal_length_pixels
+    y_local = y_prime * depth_image / focal_length_pixels
+    z_local = depth_image
+
+    assert np.all(np.isfinite(x_local)), "x_local contains invalid values"
+    assert np.all(np.isfinite(y_local)), "y_local contains invalid values"
+    assert np.all(np.isfinite(z_local)), "z_local contains invalid values"
+    # print(y_local.min(), y_local.max())
+    local_points = np.stack((x_local, -y_local, -z_local), axis=-1)
+
+    global_points = local_to_global(camera_position, camera_quaternion, local_points)
+    # Create a grid of pixel coordinates (i, j)
+    global_height_map = global_points[:, :, 1]
+    return global_height_map
+
+
 
 def plot_groupby(df, groupby, var, std=True, title=''):
     # df['group'] = df['itr'] // 50
@@ -209,28 +247,27 @@ def gif(path):
     fig = plt.figure()
     ims = []
 
-    for i in range(len(listdir(path))):
+    for i in range(len(listdir(path))-1):
         try:
             ndx=0
             if len(listdir(f"{path}/step{i}")) > 3:
                 ndx=1
                 
             np_img_i = cv2.imread(f"{path}/step{i}/image{ndx}.png")
-
             np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
-
             im = plt.imshow(np_img_i)
             ims.append([im])
+            
             np_img_i_copy = cv2.imread(f"{path}/step{i}/copy_image{ndx}.png")
             np_img_i_copy = cv2.cvtColor(np_img_i_copy, cv2.COLOR_BGR2RGB)
             im2 = plt.imshow(np_img_i_copy)
             ims.append([im2])
 
         except Exception as e:
+            print(e)
             print(f"Image step{i} not found")
             continue
 
     ani = animation.ArtistAnimation(fig, ims, interval=400, blit=True)
-    HTML(ani.to_jshtml())
     ani.save(f'{path}/animagion.gif', writer='imagemagick')
-
+  

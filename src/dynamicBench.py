@@ -187,16 +187,16 @@ class NavBench(DynamicBench):
     def setup_experiment(self, split, scene_ids):
 
         self.split = split
-        self.sim_kwargs['scene_config'] =  f"scenes/hm3d/hm3d_annotated_{self.split}_basis.scene_dataset_config.json"
+        self.sim_kwargs['scene_config'] =  f"datasets/hm3d/hm3d_annotated_{self.split}_basis.scene_dataset_config.json"
         if self.split == 'train':
-            json_file =  "scenes/hm3d/hm3d_annotated_train_basis.scene_dataset_config.json"
+            json_file =  "datasets/hm3d/hm3d_annotated_train_basis.scene_dataset_config.json"
             with open(json_file, 'r') as f:
                 data = json.load(f)
                 scenes = data['stages']['paths']['.glb']
                 scene_ids = set(int(s[2:5]) for s in scenes)
-            files = [f for f in os.listdir('scenes/hm3d/train/') if int(f[2:5]) in scene_ids]
+            files = [f for f in os.listdir('datasets/hm3d/train/') if int(f[2:5]) in scene_ids]
         else:
-            files = os.listdir('scenes/hm3d/val/')
+            files = os.listdir('datasets/hm3d/val/')
         if scene_ids:
             files = [f for f in files if int(f[2:5]) in scene_ids]
         files.sort()
@@ -212,7 +212,7 @@ class NavBench(DynamicBench):
                 f = random.choice(self.files)
                 hsh = f[6:]
                 self.sim_kwargs['scene_id'] = f[2:5]
-                self.sim_kwargs['scene_path'] = f'scenes/hm3d/{self.split}/00{f[2:5]}-{hsh}/{hsh}.basis.glb'
+                self.sim_kwargs['scene_path'] = f'datasets/hm3d/{self.split}/00{f[2:5]}-{hsh}/{hsh}.basis.glb'
                 self.annotatedSimulator = AnnotatedSimulator(**self.sim_kwargs)
 
                 random.shuffle(goals)            
@@ -390,14 +390,14 @@ class GOATBench(DynamicBench):
     def setup_experiment(self, split, num_scenes):
         self.goat_data = []
         self.split = split
-        self.sim_kwargs['scene_config'] =  f"scenes/hm3d/hm3d_annotated_{self.split}_basis.scene_dataset_config.json"
+        self.sim_kwargs['scene_config'] =  f"datasets/hm3d/hm3d_annotated_{self.split}_basis.scene_dataset_config.json"
         if self.split == 'train':
             dir = 'train'
         else:
             dir = 'val_unseen'
         
-        for f in os.listdir(f'goatBench/{dir}/content')[0:num_scenes]:
-            with gzip.open(f'goatBench/{dir}/content/{f}', 'rt') as gz:
+        for f in os.listdir(f'datasets/goatBench/{dir}/content')[0:num_scenes]:
+            with gzip.open(f'datasets/goatBench/{dir}/content/{f}', 'rt') as gz:
                 self.goat_data.append(json.load(gz))
 
         random.shuffle(self.goat_data)
@@ -416,7 +416,7 @@ class GOATBench(DynamicBench):
 
 
         self.sim_kwargs['scene_id'] = f[2:5]
-        self.sim_kwargs['scene_path'] = f'scenes/hm3d/{self.split}/{f}/{glb}'
+        self.sim_kwargs['scene_path'] = f'datasets/hm3d/{self.split}/{f}/{glb}'
         self.annotatedSimulator = AnnotatedSimulator(**self.sim_kwargs)
 
         self.annotatedSimulator.do_draw_arrows = points if draw_arrows else None
@@ -457,9 +457,9 @@ class GOATBench(DynamicBench):
         goal = self.curr_episode[self.curr_goal_ndx]
 
         if goal['mode'] == 'object':
-            print('Current goal:', goal['name'])
+            print('Current object:', goal['name'])
         if goal['mode'] == 'description':
-            print('Current goal:', goal['lang_desc'])
+            print('Current desc:', goal['lang_desc'])
         self.run_metadata = {
             'task': self.curr_run_name,
             'history': history,
@@ -485,9 +485,9 @@ class GOATBench(DynamicBench):
         goal = self.curr_episode[self.curr_goal_ndx]
 
         if goal['mode'] == 'object':
-            inst = f'Find the nearest {goal["name"]} and navigate to it.' 
+            inst = f'Find the nearest {goal["name"]} and navigate to it' 
         if goal['mode'] == 'description':
-            inst = f"Find and navigate to the {goal['lang_desc']}. Think about which room you would find this {goal['name']} in."
+            inst = f"Find and navigate to the {goal['lang_desc']}. Think about which room you would find this {goal['name']} in"
 
         prompt = f"It is now timestep {self.step}. You have moved to a new location within the environment. "
         prompt += (
@@ -499,22 +499,25 @@ class GOATBench(DynamicBench):
 0: turn completely around, use this when you dont see any good arrows, or IF THERE ARE NO ARROWS labeled on the image. 
 -1: DONE, you have already navigated to the {goal['name']}!!
 }}
-Think which way you should go to reagh the {goal['name']} Then, select one action from the image or the special actions and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT go through CLOSED DOORS or through obstacles. 
+Think which way you should go to reach the {goal['name']}. Then, select one action from the image or the special actions and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT go through CLOSED DOORS or through obstacles. 
 """
+        
+
+
         if len(self.run_metadata['sensors']) > 1:
             num_sensors = len(self.annotatedSimulator.sensors)
             prompt = f"It is now timestep {self.step}. You have moved to a new location within the environment. "
             prompt += (
+            f"TASK: {inst}. ")
             f"First, tell me what you see in each of your sensor observations. Think about how the observations overlap, some objects will be visible in multiple sensors. "  
-            f"There are arrows superimposed onto the {num_sensors} different images, which represent valid actions. "
-            f"TASK: {inst} ")
+            f"There are arrows superimposed onto the {num_sensors} different images, which represent potential valid actions. "
             prompt += f"""In addition to any actions labeled on the images, you have the following special actions.
 {{
 0: turn completely around, use this when you DONT SEE ANY GOOD ACTIONS, and want fresh observations. 
 -1: DONE, you are within 1 meter of the {goal['name']}{'. Make sure it matches the one in the description' if goal['mode'] == 'description' else ''}!!
 }}
-Think about how each action will move you. Then, select one action from the images or the special actions and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you cannot go through closed doors or through obstacles"""
-            
+Think which way you should go to reach the {goal['name']}. Then, select one action from the image or the special actions and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT go through CLOSED DOORS or through obstacles. 
+"""            
         images = self.get_sensor_images(obs)
         row = {'actions': -10, 'tokens_generated':0, 'success': 1, 'metadata': self.run_metadata,
         'speed': 0, 'scene_id': self.annotatedSimulator.scene_id, 'goal': goal['name'], 'goal_mode': goal['mode'], 'goal_index': self.curr_goal_ndx, 'curr_goal_steps': self.step - self.last_goal_reset,
@@ -530,26 +533,6 @@ Think about how each action will move you. Then, select one action from the imag
             row['distance_to_goal'] = np.linalg.norm(agent_state.position - goal['position'])
             metadata['DIST TO GOAL'] = row['distance_to_goal']
         print('distance to goal', row['distance_to_goal'])
-        copies = []
-        for sensor in self.annotatedSimulator.sensors:
-            copy = obs[f'color_sensor_{sensor}']['image'].copy()
-            self.annotatedSimulator.draw_arrows(copy, agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], self.run_metadata['points'], chosen_action=row['actions'])
-            # Assuming `copy` is the image you want to modify
-            text = goal['name']
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 2.7
-            thickness = 3
-            text_color = (0, 0, 0)  # Black color
-            background_color = (255, 255, 255)  # White color
-            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
-            text_x = 10
-            text_y = 10 + text_size[1]  # Add the height of the text to the y position
-            cv2.rectangle(copy, (text_x, text_y - text_size[1]), (text_x + text_size[0], text_y), background_color, -1)
-            cv2.putText(copy, text, (text_x, text_y), font, font_scale, text_color, thickness)
-
-            if copy.shape[-1] == 4:
-                copy = copy[:, :, 0:3]
-            copies.append(Image.fromarray(copy, mode='RGB'))
 
         metadata['INST'] = inst
         done = False
@@ -568,6 +551,31 @@ Think about how each action will move you. Then, select one action from the imag
         elif row['actions'] == -1:
             print('MODEL RETURNED DONE BUT NOT NEAR GOAL')
             
+        copies = []
+        for sensor in self.annotatedSimulator.sensors:
+            copy = obs[f'color_sensor_{sensor}']['image'].copy()
+            self.annotatedSimulator.draw_arrows(copy, agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], self.run_metadata['points'], chosen_action=row['actions'])
+            # Assuming `copy` is the image you want to modify
+            text = f"{self.curr_goal_ndx}: {goal['name']}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 2.7
+            thickness = 3
+            text_color = (0, 0, 0)  # Black color
+            if new_goal and goal_reached:
+                background_color = (0, 255, 0)  # Green color
+            elif new_goal:
+                background_color = (0, 0, 255) # Red color
+            else:
+                background_color = (255, 255, 255)  # White color
+            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x = 10
+            text_y = 10 + text_size[1]  # Add the height of the text to the y position
+            cv2.rectangle(copy, (text_x, text_y - text_size[1]-10), (text_x + text_size[0], text_y+15), background_color, -1)
+            cv2.putText(copy, text, (text_x, text_y), font, font_scale, text_color, thickness)
+
+            if copy.shape[-1] == 4:
+                copy = copy[:, :, 0:3]
+            copies.append(Image.fromarray(copy, mode='RGB'))
         if self.run_metadata['mask_thinking'] and row['success'] == 1:
             self.vlm.session.history[-1].parts[0].text = f'\n' + '{"action": ' + str(row["actions"]) + '}'
         row['goal_reached'] = goal_reached
@@ -590,7 +598,6 @@ Think about how each action will move you. Then, select one action from the imag
         self.df = pd.concat([self.df, pd.DataFrame([row])], ignore_index=True)
         if self.step % self.log_freq == 0 or row['success'] == 0:
             self.log(prompt, images, resp, row['success'], metadata, copy_images=copies)
-            
             
         if done:
             return None
