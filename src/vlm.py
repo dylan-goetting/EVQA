@@ -1,4 +1,5 @@
 from collections import Counter
+import random
 
 import numpy as np
 from sympy import im
@@ -17,7 +18,7 @@ import io
 import os
 import google.generativeai as genai
 
-class VLMAgent:
+class VLM:
     """
     Trivial agent for testing
     """
@@ -34,7 +35,7 @@ class VLMAgent:
         pass
 
 
-class LlavaAgent(VLMAgent):
+class LlavaModel(VLM):
 
     def __init__(self, **kwargs):
         
@@ -161,7 +162,7 @@ class LlavaAgent(VLMAgent):
         
         return output_text, {'tokens_generated': tokens_generated, 'duration': duration, 'input_tokens': input_tokens}
 
-class GeminiAgent(VLMAgent):
+class GeminiModel(VLM):
     
     def __init__(self, model="gemini-1.5-flash", sys_instruction=None):
         self.name = model
@@ -189,7 +190,10 @@ class GeminiAgent(VLMAgent):
         try:
             t = time.time()
             #images = [genai.upload_file(im.tobytes()) for im in images]
+            rng_state = random.getstate()
             response = self.session.send_message([text_prompt] + images)
+            rng_state = random.setstate(rng_state)
+            
             if len(self.session.history) > 2*history:
                 self.session.history = self.session.history[-2*history:]
             if add_timesteps_prompt:
@@ -199,10 +203,10 @@ class GeminiAgent(VLMAgent):
                 # response = chat_session.send_message("INSERT_INPUT_HERE")
             # response = self.model.generate_content([image, text_prompt])
             finish = time.time() - t
-            time.sleep(max(0.01, 3.5 - finish))
+            time.sleep(max(0.01, 2 - finish))
             resp = response.text
             perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
-            print(f'\n{self.name} finished inference, took {finish} seconds, speed of {perf["tokens_generated"]/finish} t/s')
+            print(f'\n{self.name} finished inference, took {np.round(finish, 2)} seconds, speed of {np.round(perf["tokens_generated"]/finish, 2)} t/s')
         
         except Exception as e:  
             resp = f"ERROR: {e}"

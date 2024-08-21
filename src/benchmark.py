@@ -12,13 +12,13 @@ import h5py
 import pandas as pd
 from PIL import Image
 from src.utils import *
-from src.vlmAgent import VLMAgent
+from vlm import *
 from src.annoatedSimulator import AnnotatedSimulator
 import seaborn as sns
 
 class SpatialBenchmark:
 
-    def __init__(self, sim_kwargs, vlm_agent: VLMAgent, offline=True, data_path=None):
+    def __init__(self, sim_kwargs, vlm_agent: VLM, offline=True, data_path=None):
         self.offline = offline
         if self.offline:
             data_path = f'annotated_datasets/{data_path}.hdf5'

@@ -3,7 +3,6 @@ from math import e
 import pdb
 from collections import Counter
 import pickle
-from random import shuffle
 import random
 from sqlite3 import DatabaseError
 import sys
@@ -19,11 +18,10 @@ class AnnotatedSimulator:
 
     def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, 
                  verbose=False, scene_id=None, sensors=['center'], random_seed=100):
-        # habitat_sim.utils.logging.disable()
 
         self.scene_id = scene_id
         self.verbose = verbose
-        self.steps = 0
+        self.steps = 0 
         self.action_mapping = {
             ord('w'): "move_forward",
             ord('a'): "turn_left",
@@ -35,6 +33,7 @@ class AnnotatedSimulator:
         self.show_semantic = show_semantic
         self.headless = headless
         self.sensors = sensors
+        self.priv_actions = True
 
         self._objects_to_annotate = None
         self._draw_arrows = False
@@ -58,7 +57,7 @@ class AnnotatedSimulator:
         backend_cfg.scene_id = scene_path
         backend_cfg.scene_dataset_config_file = scene_config
         backend_cfg.enable_physics = True
-        backend_cfg.random_seed = random_seed
+        # backend_cfg.random_seed = random_seed
 
         agent_cfg = habitat_sim.agent.AgentConfiguration()
         agent_cfg.sensor_specifications = []
@@ -87,10 +86,11 @@ class AnnotatedSimulator:
 
         try:
             self.sim = habitat_sim.Simulator(self.sim_cfg)
+            print('SIM Initialized!')
         except Exception as e:
             print(e)
             raise SystemError("Could not initialize simulator")
-  
+        self.sim.seed(random_seed)
         all_floors = pickle.load(open("scenes/hm3d/scene_floor_heights.pkl", "rb"))
         # pdb.set_trace()
         self.floor_data = all_floors[int(self.scene_id)]
@@ -238,7 +238,6 @@ class AnnotatedSimulator:
             if action == 7:
                 return (['forward', -1.5],)
             if action == -1:
-                print('MODEL THINKS DONE')
                 return (['forward' , 0.2],)
 
         if action == 'w':
@@ -274,17 +273,27 @@ class AnnotatedSimulator:
         self.sim.close()
         cv2.destroyAllWindows()
 
-    def search_objects(self, name="", exact=True):
-        all_objects = self.get_all_objects(instances=(1, 100))
+    def search_objects(self, name="", exact=True, mode='name'):
+
+        assert mode in ['name', 'id', 'sem_id']
+        if mode == 'name':
+            fn = lambda obj: obj.category.name()
+        if mode == 'id':
+            assert exact
+            fn = lambda obj: obj.id
+        if mode == 'sem_id':
+            assert exact
+            fn = lambda obj: obj.semantic_id
+        all_objects = self.get_all_objects()
         if exact:
-            return [obj for obj in all_objects if obj.category.name() == name]
+            return [obj for obj in all_objects if fn(obj) == name]
         else:
-            return [obj for obj in all_objects if name in obj.category.name()]
+            return [obj for obj in all_objects if name in fn(obj)]
     
     def move(self, action, magnitude, noise=False):
         assert action in ['forward', 'rotate']
-        if noise:
-            action = action*random.normalvariate(1, 0.2)
+        # if noise:
+        #     action = action*random.normalvariate(1, 0.2)
 
         curr_state = self.sim.get_agent(0).get_state()
         curr_position = curr_state.position
@@ -334,7 +343,7 @@ class AnnotatedSimulator:
 
         if actions == 'r':
             random_point = self.sim.pathfinder.get_random_navigable_point()
-            random_yaw = 2 #random.uniform(0, 2 * np.pi)
+            random_yaw = 2 
             random_orientation = quat_from_angle_axis(random_yaw, np.array([0, 1, 0]))
             agent_state = habitat_sim.AgentState()
             agent_state.position = random_point
@@ -407,12 +416,14 @@ class AnnotatedSimulator:
             all_out[f'color_sensor_{sensor}'] = out
         return all_out
 
-    def get_all_objects(self, filter=True, instances=(2, 15)):
+    def get_all_objects(self, filter=True, instances=None):
         if filter:
             objects = [obj for obj in self.sim.semantic_scene.objects if obj.category.name() not in self.bad_categories]
         else:
             objects = self.sim.semantic_scene.objects
         counted_categories = Counter([a.category.name() for a in objects])
+        if instances is None:
+            return objects
         return [obj for obj in objects if (counted_categories[obj.category.name()] >= instances[0] and counted_categories[obj.category.name()] <= instances[1])]
                 
     def get_closest_objects(self, semanic_images, agent_state, num_objects=5):
@@ -430,20 +441,23 @@ class AnnotatedSimulator:
 
     def agent_frame_to_image_coords(self, point, agent_state, camera_state):
         global_p = local_to_global(agent_state.position, agent_state.rotation, point)
-        delta = (global_p - agent_state.position)/10
-        pos = np.copy(agent_state.position)
-        for _ in range(10):
-            new_pos = self.sim.pathfinder.try_step(pos, pos + delta)
-            pos = new_pos
-        if np.linalg.norm(pos - global_p) > 0.1:
-            true_delta = pos - agent_state.position
-            pos = self.sim.pathfinder.try_step(pos, pos - 0.25*true_delta)
+        if self.priv_actions:
+            delta = (global_p - agent_state.position)/10
+            pos = np.copy(agent_state.position)
+            for _ in range(10):
+                new_pos = self.sim.pathfinder.try_step(pos, pos + delta)
+                pos = new_pos
+            if np.linalg.norm(pos - global_p) > 0.1:
+                true_delta = pos - agent_state.position
+                pos = self.sim.pathfinder.try_step(pos, pos - 0.25*true_delta)
+        else:
+            pos = global_p
 
         camera_point = global_to_local(camera_state.position, camera_state.rotation, pos)
         if camera_point[2] > 0:
             return None
         xp, yp = self.project_2d(camera_point)
-        return xp, yp
+        return (xp, yp), pos
 
     def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=2, font_thickness=3, chosen_action=None):
         origin_point = [0, 0, 0]
@@ -452,7 +466,7 @@ class AnnotatedSimulator:
         font = cv2.FONT_HERSHEY_SIMPLEX
         text_color = (0, 0, 0) 
         circle_color = (255, 255, 255) 
-        start_p = self.agent_frame_to_image_coords(origin_point, agent_state, camera_state)
+        start_p, pos = self.agent_frame_to_image_coords(origin_point, agent_state, camera_state)
         action = 0
         angles = []
         if chosen_action == 0:
@@ -470,15 +484,16 @@ class AnnotatedSimulator:
         for mag, theta in points:
             action += 1
             cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
-            end_p = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
-                
+            end_p, pos = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
+            dist = np.linalg.norm(pos - agent_state.position)
+
             if end_p is None:
                 continue
             angle = np.arctan2(end_p[1] - start_p[1], end_p[0] - start_p[0])
-            if angles and min([abs(angle - ang) for ang in angles]) < 0.3:
+            if angles and min([abs(angle - ang) for ang in angles]) < 0.28:
                 continue
-            if 0.05 * rgb_image.shape[1] <= end_p[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_p[1] <= 0.95 * rgb_image.shape[0]:
-
+            if 0.05 * rgb_image.shape[1] <= end_p[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_p[1] <= 0.95 * rgb_image.shape[0] and dist > 0.01:
+                
                 angles.append(angle)
                 arrow_color = (255, 0, 0)  
                 cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.05)
