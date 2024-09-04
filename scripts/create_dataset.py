@@ -5,7 +5,7 @@ import os
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 from src.benchmark import *
-from src.vlmAgent import *
+from vlm import *
 import h5py
 import pickle
 

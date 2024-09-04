@@ -1,9 +1,11 @@
 import dis
+from hmac import new
 from math import e
 import pdb
 from collections import Counter
 import pickle
 import random
+import re
 from sqlite3 import DatabaseError
 import sys
 from habitat_sim.utils.common import quat_from_angle_axis, quat_to_angle_axis
@@ -17,7 +19,7 @@ from src.utils import *
 class AnnotatedSimulator:
 
     def __init__(self, scene_path, scene_config, resolution=(720, 1280), fov=90, headless=False, show_semantic=False, 
-                 verbose=False, scene_id=None, sensors=['center'], random_seed=100):
+                 verbose=False, scene_id=None, sensors=['center'], random_seed=100, goal_image_agent=False, num_agents=1):
 
         self.scene_id = scene_id
         self.verbose = verbose
@@ -39,7 +41,8 @@ class AnnotatedSimulator:
         self._draw_arrows = False
         self._draw_image_annotations = False
         self._num_objects = 2
-
+        self.goal_image_agent = goal_image_agent
+        self.agents = list(range(num_agents))
         self.bad_categories = ['floor', 'wall', 'ceiling', 'Unknown', 'unknown', 'surface', 'beam', 'board', 'door', 'door frame', 'door window']
 
         if not self.headless:
@@ -64,11 +67,11 @@ class AnnotatedSimulator:
         self.fov = fov
         self.sem_res = [240, 320]
         for sensor in sensors:
-            pitch = -0.5
+            pitch = -0.4
             sem_cfg = habitat_sim.CameraSensorSpec()
             sem_cfg.uuid = f"semantic_sensor_{sensor}"
             sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
-            sem_cfg.resolution = [240, 320]
+            sem_cfg.resolution = self.sem_res
             sem_cfg.hfov = fov
             sem_cfg.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(sem_cfg)
@@ -84,22 +87,35 @@ class AnnotatedSimulator:
             depth_sensor_spec = habitat_sim.CameraSensorSpec()
             depth_sensor_spec.uuid = f"depth_sensor_{sensor}"
             depth_sensor_spec.sensor_type = habitat_sim.SensorType.DEPTH
-            depth_sensor_spec.resolution = self.RESOLUTION
+            depth_sensor_spec.resolution = self.RESOLUTION #(self.RESOLUTION[0]//4, self.RESOLUTION[1]//4)
             depth_sensor_spec.hfov = fov            
             depth_sensor_spec.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(depth_sensor_spec)
 
         self.focal_length = calculate_focal_length(fov, self.RESOLUTION[1])
-        self.sim_cfg = habitat_sim.Configuration(backend_cfg, [agent_cfg])
+        agents = [agent_cfg, agent_cfg]
+        if goal_image_agent:
+            goal_cfg = habitat_sim.agent.AgentConfiguration()
+            goal_sensor_spec = habitat_sim.CameraSensorSpec()
+            goal_sensor_spec.uuid = f"goal_sensor"
+            goal_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
+            goal_sensor_spec.resolution = self.RESOLUTION
+            goal_sensor_spec.hfov = 100     
+            goal_sensor_spec.orientation = mn.Vector3([0, 0, 0])
+            goal_sensor_spec.position = mn.Vector3([0, 0, 0])       
+            goal_cfg.sensor_specifications = [goal_sensor_spec]
+            agents.append(goal_cfg)
 
+        self.sim_cfg = habitat_sim.Configuration(backend_cfg, agents)
         try:
             self.sim = habitat_sim.Simulator(self.sim_cfg)
             print('SIM Initialized!')
         except Exception as e:
             print(e)
+            self.sim.close()
             raise SystemError("Could not initialize simulator")
         self.sim.seed(random_seed)
-        all_floors = pickle.load(open("scenes/hm3d/scene_floor_heights.pkl", "rb"))
+        all_floors = pickle.load(open("datasets/scene_floor_heights.pkl", "rb"))
         # pdb.set_trace()
         self.floor_data = all_floors[int(self.scene_id)]
         self.floors = sorted(list(self.floor_data['points'].keys()))
@@ -193,17 +209,26 @@ class AnnotatedSimulator:
                 return True
         return False
 
-    def project_2d(self, local_point):
+    def project_2d(self, local_point, resolution=None):
+        if resolution is None:
+            resolution = self.RESOLUTION
 
         point_3d = [local_point[0], -local_point[1], -local_point[2]] #inconsistency between habitat camera frame and classical convention
         if point_3d[2] == 0:
             point_3d[2] = 0.0001
         x = self.focal_length * point_3d[0] / point_3d[2]
-        x_pixel = int(self.RESOLUTION[1] / 2 + x)
+        x_pixel = int(resolution[1] / 2 + x)
 
         y = self.focal_length * point_3d[1] / point_3d[2]
-        y_pixel = int(self.RESOLUTION[0] / 2 + y)
+        y_pixel = int(resolution[0] / 2 + y)
         return x_pixel, y_pixel
+
+    def unproject_2d(self, x_pixel, y_pixel, depth, resolution=None):
+        if resolution is None:
+            resolution = self.RESOLUTION
+        x = (x_pixel - resolution[1] / 2) * depth / self.focal_length
+        y = (y_pixel - resolution[0] / 2) * depth / self.focal_length
+        return x, -y, -depth
 
     def annotate_image(self, img, obj_wrapped):
         x_pixel, y_pixel = self.project_2d(obj_wrapped['curr_local_coords'])
@@ -298,12 +323,12 @@ class AnnotatedSimulator:
         else:
             return [obj for obj in all_objects if name in fn(obj)]
     
-    def move(self, action, magnitude, noise=False):
+    def move(self, action, magnitude, noise=False, agent_id=0):
         assert action in ['forward', 'rotate']
         # if noise:
         #     action = action*random.normalvariate(1, 0.2)
 
-        curr_state = self.sim.get_agent(0).get_state()
+        curr_state = self.sim.get_agent(agent_id).get_state()
         curr_position = curr_state.position
         curr_quat = curr_state.rotation  # Quaternion
 
@@ -328,11 +353,7 @@ class AnnotatedSimulator:
             if np.linalg.norm(pos - global_p) > 0.05:
                 true_delta = pos - curr_position
                 pos = self.sim.pathfinder.try_step(pos, pos - true_delta/4)
-
-            # global_p = self.sim.pathfinder.snap_point(global_p)
             new_agent_state.position = pos
-            # print('moving')
-            # print('curr_position', curr_position, 'global_p', global_p, 'new_agent_state.position', new_agent_state.position, 'cart', local_point)
 
             
         elif action == 'rotate':
@@ -340,14 +361,22 @@ class AnnotatedSimulator:
             new_quat = quat_from_angle_axis(new_theta, np.array([0, 1, 0]))
             new_agent_state.rotation = new_quat
 
-        self.sim.get_agent(0).set_state(new_agent_state)
-        observations = self.sim.get_sensor_observations()
+        self.sim.get_agent(agent_id).set_state(new_agent_state)
+        observations = self.sim.get_sensor_observations(agent_id)
 
         return observations
 
+    def get_goal_image(self, goal_position, goal_rotation):
+        new_agent_state = habitat_sim.AgentState()
+        new_agent_state.position = goal_position
+        new_agent_state.rotation = goal_rotation
+        self.sim.get_agent(1).set_state(new_agent_state)
+        observations = self.sim.get_sensor_observations(1)
 
+        return observations['goal_sensor']
+    
 
-    def step(self, actions):
+    def step(self, actions, agent_id=0):
 
         if actions == 'r':
             random_point = self.sim.pathfinder.get_random_navigable_point()
@@ -356,15 +385,16 @@ class AnnotatedSimulator:
             agent_state = habitat_sim.AgentState()
             agent_state.position = random_point
             agent_state.rotation = random_orientation
-            self.sim.get_agent(0).set_state(agent_state)
-            observations = self.sim.get_sensor_observations()
+            self.sim.get_agent(agent_id).set_state(agent_state)
+            observations = self.sim.get_sensor_observations(agent_id)
 
         else:
             for a1, a2 in actions:
-                observations = self.move(a1, a2)
+                observations = self.move(a1, a2, agent_id=agent_id)
 
-        agent_state = self.sim.get_agent(0).get_state()
-        
+    
+        agent_state = self.sim.get_agent(agent_id).get_state()
+    
         all_out = {}
         for sensor in self.sensors:
             out = {'annotations': [], 'agent_state': agent_state}
@@ -397,20 +427,6 @@ class AnnotatedSimulator:
                 else:
                     out['annotations'].append(obj_wrapped)
 
-            if self.do_draw_arrows: 
-                self.draw_arrows(observations[f'color_sensor_{sensor}'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], points=self.do_draw_arrows)
-                img = observations[f'color_sensor_{sensor}']
-                if sensor == 0:
-                    name = 'center'
-                elif sensor > 0:
-                    name = 'left'
-                else:
-                    name = 'right'
-                if len(self.sensors) > 1:
-                    text_size, _ = cv2.getTextSize(f"{name.upper()} SENSOR", cv2.FONT_HERSHEY_SIMPLEX, 2.5, 3)
-                    text_x = int((img.shape[1] - text_size[0]) / 2)
-                    cv2.putText(img, f"{name.upper()} SENSOR", (text_x, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
-
             if not self.headless:
                 cv2.imshow(f"RGB View {sensor}", cv2.cvtColor(observations[f'color_sensor_{sensor}'], cv2.COLOR_RGB2BGR))
 
@@ -423,6 +439,7 @@ class AnnotatedSimulator:
             out['image'] = observations[f'color_sensor_{sensor}']
             all_out[f'color_sensor_{sensor}'] = out
             all_out[f'depth_sensor_{sensor}'] = observations[f'depth_sensor_{sensor}']
+
         return all_out
 
     def get_all_objects(self, filter=True, instances=None):
@@ -448,72 +465,66 @@ class AnnotatedSimulator:
         filtered.sort(key=lambda x: x[1])
         return filtered[0:num_objects]
 
-    def agent_frame_to_image_coords(self, point, agent_state, camera_state):
-        global_p = local_to_global(agent_state.position, agent_state.rotation, point)
-        if self.priv_actions:
-            delta = (global_p - agent_state.position)/10
-            pos = np.copy(agent_state.position)
-            for _ in range(10):
-                new_pos = self.sim.pathfinder.try_step(pos, pos + delta)
-                pos = new_pos
-            if np.linalg.norm(pos - global_p) > 0.1:
-                true_delta = pos - agent_state.position
-                pos = self.sim.pathfinder.try_step(pos, pos - 0.25*true_delta)
-        else:
-            pos = global_p
+    # def agent_frame_to_image_coords(self, point, agent_state, camera_state):
+    #     global_p = local_to_global(agent_state.position, agent_state.rotation, point)
+    #     if self.priv_actions:
+    #         delta = (global_p - agent_state.position)/10
+    #         pos = np.copy(agent_state.position)
+    #         for _ in range(10):
+    #             new_pos = self.sim.pathfinder.try_step(pos, pos + delta)
+    #             pos = new_pos
+    #         if np.linalg.norm(pos - global_p) > 0.1:
+    #             true_delta = pos - agent_state.position
+    #             pos = self.sim.pathfinder.try_step(pos, pos - 0.15*true_delta)
+    #     else:
+    #         pos = global_p
 
-        camera_point = global_to_local(camera_state.position, camera_state.rotation, pos)
-        if camera_point[2] > 0:
-            return None
-        xp, yp = self.project_2d(camera_point)
-        return (xp, yp), pos
+    #     camera_point = global_to_local(camera_state.position, camera_state.rotation, pos)
+    #     if camera_point[2] > 0:
+    #         return None
+    #     xp, yp = self.project_2d(camera_point)
+    #     return (xp, yp), pos
 
-    def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=2, font_thickness=3, chosen_action=None):
-        origin_point = [0, 0, 0]
-        if points is None:
-            points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        text_color = (0, 0, 0) 
-        circle_color = (255, 255, 255) 
-        start_p, pos = self.agent_frame_to_image_coords(origin_point, agent_state, camera_state)
-        action = 0
-        angles = []
-        if chosen_action == 0:
-            text = 'TURN AROUND'
-            text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.5, 3)
-            text_x = int((rgb_image.shape[1] - text_size[0]) / 2)
-            cv2.putText(rgb_image, text, (text_x, 120), cv2.FONT_HERSHEY_SIMPLEX, 4, (0, 255, 0), 3)
+    # def draw_arrows(self, rgb_image, agent_state, camera_state, points=None, font_scale=1.5, font_thickness=3, chosen_action=None):
 
-        if chosen_action == -1:
-            text = 'MODEL THINKS DONE'
-            text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.5, 3)
-            text_x = int((rgb_image.shape[1] - text_size[0]) / 2)
-            cv2.putText(rgb_image, text, (text_x, 120), cv2.FONT_HERSHEY_SIMPLEX, 4, (0, 255, 0), 3)
+    #     origin_point = [0, 0, 0]
+    #     if points is None:
+    #         points = [(1.75, -np.pi*0.35), (1.5, -np.pi*0.21), (1.5, 0), (1.5, 0.21*np.pi),  (1.75, 0.35*np.pi)]
+    #     font = cv2.FONT_HERSHEY_SIMPLEX
+    #     text_color = (0, 0, 0) 
+    #     circle_color = (255, 255, 255) 
+    #     start_p, pos = self.agent_frame_to_image_coords(origin_point, agent_state, camera_state)
+    #     action = 0
+    #     angles = []
+    #     if chosen_action == 0:
+    #         put_text_on_image(rgb_image, 'TURN AROUND', text_color=(0, 255, 0), text_size=4, location='center', text_thickness=3, highlight=False)
+    #     if chosen_action == -1:
+    #         put_text_on_image(rgb_image, 'MODEL THINKS DONE', text_color=(0, 255, 0), text_size=4, location='center', text_thickness=3, highlight=False)
 
-        for mag, theta in points:
-            action += 1
-            cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
-            out = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
-            if out is None:
-                continue
-            end_p, pos = out
-            dist = np.linalg.norm(pos - agent_state.position)
+    #     for mag, theta in points:
+    #         action += 1
+    #         cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
+    #         out = self.agent_frame_to_image_coords(cart, agent_state, camera_state)
+    #         if out is None:
+    #             continue
+    #         end_p, pos = out
+    #         dist = np.linalg.norm(pos - agent_state.position)
 
-            angle = np.arctan2(end_p[1] - start_p[1], end_p[0] - start_p[0])
-            if angles and min([abs(angle - ang) for ang in angles]) < 0.28:
-                continue
-            if 0.05 * rgb_image.shape[1] <= end_p[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_p[1] <= 0.95 * rgb_image.shape[0] and dist > 0.01:
+    #         angle = np.arctan2(end_p[1] - start_p[1], end_p[0] - start_p[0])
+    #         if angles and min([abs(angle - ang) for ang in angles]) < 0.25:
+    #             continue
+    #         if 0.05 * rgb_image.shape[1] <= end_p[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_p[1] <= 0.95 * rgb_image.shape[0] and dist > 0.01:
                 
-                angles.append(angle)
-                arrow_color = (255, 0, 0)  
-                cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.05)
-                text = str(action)
-                (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-                circle_center = (end_p[0], end_p[1])
-                circle_radius = max(text_width, text_height) // 2 + 15
-                if chosen_action is not None and action == chosen_action:
-                    cv2.circle(rgb_image, circle_center, circle_radius, (0, 255, 0), -1)
-                else:
-                    cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
-                text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
-                cv2.putText(rgb_image, text, text_position, font, font_scale, text_color, font_thickness)
+    #             angles.append(angle)
+    #             arrow_color = (255, 0, 0)  
+    #             cv2.arrowedLine(rgb_image, start_p, end_p, arrow_color, font_thickness, tipLength=0.07)
+    #             text = str(action)
+    #             (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+    #             circle_center = (end_p[0], end_p[1])
+    #             circle_radius = max(text_width, text_height) // 2 + 15
+    #             if chosen_action is not None and action == chosen_action:
+    #                 cv2.circle(rgb_image, circle_center, circle_radius, (0, 255, 0), -1)
+    #             else:
+    #                 cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
+    #             text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
+                # cv2.putText(rgb_image, text, text_position, font, font_scale, text_color, font_thickness)

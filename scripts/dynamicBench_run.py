@@ -1,4 +1,6 @@
 from ast import arg
+import cProfile
+from pdb import run
 from dotenv import load_dotenv
 import os
 import random
@@ -13,59 +15,85 @@ import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 from src.vlm import *
 from src.dynamicBench import *
-
+from src.multiAgent import *
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser(description="Run a dynamic benchmark")
     parser.add_argument('-sd', '--seed', type=int, help='random seed', default=0)
     parser.add_argument('-itr', '--iterations', type=int, help='number of iterations', default=50)
     parser.add_argument('-sid', '--scene_ids', type=int, nargs='+', help='scene ids to run', default=[])
     parser.add_argument('-t', '--task', type=str, help='task to run', default='obj_nav')
     parser.add_argument('-sp', '--split', type=str, help='train or val', default='val')
-    parser.add_argument('-pa', '--priv_actions', action='store_true', help='use priv actions')
     parser.add_argument('-his', '--history', type=int, help='context_history', default=10)
     parser.add_argument('-il', '--inner_loop', type=int, help='inner loop', default=30)
     parser.add_argument('-c', '--consistency', type=int, help='inner loop', default=1)
     parser.add_argument('-msg', '--max_steps_per_goal', type=int, help='maximum steps per goal', default=10)
+    parser.add_argument('-mu', '--multi', action='store_true', help='verbose')
+    parser.add_argument('-u', '--uniform', action='store_true', help='uniform')
+    parser.add_argument('-um', '--use_map', action='store_true', help='use map')
+    parser.add_argument('-p', '--pro', action='store_true', help='pro')
+
 
     args = parser.parse_args()
     if args.seed == 0:
         args.seed = random.randint(0, 10000)
     random.seed(args.seed)
     np.random.seed(args.seed)
-
-    # scene_counter = pickle.load(open('scenes/hm3d/scene_counter.pickle', 'rb'))
-    # obj_counter = pickle.load(open('scenes/hm3d/val/obj_counter.pickle', 'rb'))
     bench_cls = DynamicBench
     if args.task == 'obj_nav':
         bench_cls = NavBench
     if args.task == 'goat':
         bench_cls = GOATBench
+    if args.task == 'eqa':
+        bench_cls = EQABench
+    if args.task == 'meqa':
+        bench_cls = MultiAgentEQA
     outer_run_name = datetime.datetime.now().strftime("%m%d%s") + "_seed" + str(args.seed)
     
 
-    arrow_width = 0.77
+    arrow_width = 0.7
     p1 = [(1.7, -np.pi*0.42), (1.9, -np.pi*0.28), (1.9, 0), (1.8, 0.28*np.pi),  (1.7, 0.42*np.pi)]
-    p7 = [(1.7, -np.pi*0.43), (1.8, -np.pi*0.34), (1.9, -np.pi*0.19), (1.9, 0), (1.9, np.pi*0.19), (1.8, 0.34*np.pi),  (1.7, 0.43*np.pi)]
-    points = p7 if args.priv_actions else p1
-    p7 = [(1.8, -3*arrow_width), (1.8, -2*arrow_width), (1.8, -arrow_width), (1.8, 0), (1.8, arrow_width),  (1.8, 2*arrow_width), (1.8, 3*arrow_width)]
-    sim_kwargs = { 'sensors':[0], 'resolution': (1080, 1920), 'headless': True, 'fov': 120, 'random_seed': args.seed}
-    sim_kwargs['sensors'] = [2*arrow_width, 0, -2*arrow_width]
+    p7 = [(1.7, -np.pi*0.46), (1.8, -np.pi*0.36), (1.8, -np.pi*0.3), (1.9, -np.pi*0.19), (1.9, 0), (1.9, np.pi*0.19), (1.8, 0.3*np.pi), (1.8, 0.36*np.pi),  (1.7, 0.46*np.pi)]
+    pm = [(2.5, -3*arrow_width), (2.5, -2*arrow_width), (2.5, -arrow_width), (2.5, 0), (2.5, arrow_width),  (2.5, 2*arrow_width), (2.5, 3*arrow_width)]
+    points = p7 if args.multi else p1
+    sens = [2*arrow_width, 0, -2*arrow_width] if args.multi else [0]
+    fov = 120 if args.multi else 140
+    args.history = 0 if args.multi else args.history
+    sim_kwargs = { 'sensors':sens, 'resolution': (1080, 1920), 'headless': True, 'fov': fov, 'random_seed': args.seed}
     
     if len(sim_kwargs['sensors']) > 1:
-        sys_instruction = f"You are an embodied robotic assistant, with {len(sim_kwargs['sensors'])} different RGB image sensors that each point in different directions. You observe the images and instructions given to you and output a textual repsonse, which is converted into actions that physically move you within the environment. You cannot move through obstacles or closed doors. "
+        sys_instruction = f"You are an embodied robotic assistant, with {len(sim_kwargs['sensors'])} different RGB image sensors that each point in different directions. You observe the images and instructions given to you and output a textual repsonse, which is converted into actions that physically move you within the environment. You cannot move through closed doors. "
     else:
-        sys_instruction = "You are an embodied robotic assistant, with an RGB image sensor. You observe the image and instructions given to you and output a textual response, which is converted into actions that physically move you within the environment. You cannot move through obstacles or closed doors. "
-    
-    vlm_model = GeminiModel(sys_instruction=sys_instruction)         
+        sys_instruction = "You are an embodied robotic assistant, with an RGB image sensor. You observe the image and instructions given to you and output a textual response, which is converted into actions that physically move you within the environment. You cannot move through closed doors. "
+    if args.task == 'meqa':
+        sys_instruction = "You are an embodied robotic assistant, with an RGB image sensor. You observe the image and instructions given to you and output a textual response, which is converted into actions that physically move you within the environment. You are working with another agent to complete the task, and you can communicate with them. To be as efficient as possible, you should avoid exlporing the same areas as your partner. "
+    model = 'gemini-1.5-pro' if args.pro else 'gemini-1.5-flash'
+    vlm_model = GeminiModel(model=model, sys_instruction=sys_instruction)         
+    # vlm_model = GPTModel(sys_instruction=sys_instruction)
     #agent = LLaVaAgent('qwen7b', quantize=False, use_flash_attention_2=True, device_map='auto', do_sample=True)
     
     goals = [('kitchen', ['microwave', 'stove', 'oven', 'dishwasher', 'refrigerator']), ('living room', ['sofa', 'couch', 'tv', 'coffee table']), 
             ('bedroom', ['bed', 'nightstand', 'dresser']), ('bathroom', ['toilet', 'shower', 'bath'])] 
+    goals = [('bathroom', ['toilet', 'shower', 'bath'])]
+    run_kwargs = {
+        'outer_loop': args.iterations,
+        'history': args.history,
+        'inner_loop': args.inner_loop,
+        'consistency': args.consistency,
+        'log_freq': 1,
+        'uniform': True if args.uniform else False,
+        'points': points,
+        'use_map': True if args.use_map else False
+    }
     exp_kwargs={'split': args.split, 'scene_ids': args.scene_ids}
     if args.task == 'goat':
         exp_kwargs = {'split': args.split, 'num_scenes': 20}
+        run_kwargs['max_steps_per_goal'] = args.max_steps_per_goal
+    elif args.task == 'obj_nav':
+        run_kwargs['goals'] = goals
+
     nbench = bench_cls(sim_kwargs=sim_kwargs, vlm_agent=vlm_model, exp_kwargs=exp_kwargs, outer_run_name=outer_run_name)
-    # nbench.annotatedSimulator.priv_actions = True if args.priv_actions else False
-    nbench.run_experiment(outer_loop=args.iterations, log_freq=1, history=args.history, inner_loop=args.inner_loop, points=points, consistency=args.consistency, max_steps_per_goal=args.max_steps_per_goal)
+
+    nbench.run_experiment(**run_kwargs)
 

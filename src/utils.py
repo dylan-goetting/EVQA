@@ -68,6 +68,49 @@ def annotate_image_offline(annotation, image, fov):
 
     return image
 
+
+def put_text_on_image(image, text, location, font=cv2.FONT_HERSHEY_SIMPLEX, text_size=2.7, background_color=(255, 255, 255), text_color=(0, 0, 0), text_thickness=3, highlight=True):
+    font_thickness = int(text_thickness)
+    assert location in ['top_left', 'top_right', 'bottom_left', 'bottom_right', 'top_center', 'center'], "Location must be one of 'top_left', 'top_right', 'bottom_left', 'bottom_right', 'top_center', 'center'"
+    
+    # Get image dimensions
+    image_height, image_width = image.shape[:2]
+    
+    # Get text size
+    text_shape, _ = cv2.getTextSize(text, font, text_size, font_thickness)
+    
+    # Calculate the text position based on the location
+    if location == 'top_left':
+        text_x = 10
+        text_y = text_shape[1] + 10
+    elif location == 'top_right':
+        text_x = image_width - text_shape[0] - 10
+        text_y = text_shape[1] + 10
+    elif location == 'bottom_left':
+        text_x = 10
+        text_y = image_height - 10
+    elif location == 'bottom_right':
+        text_x = image_width - text_shape[0] - 10
+        text_y = image_height - 10
+    elif location == 'top_center':
+        text_x = (image_width - text_shape[0]) // 2
+        text_y = text_shape[1] + 10
+    elif location == 'center':
+        text_x = (image_width - text_shape[0]) // 2
+        text_y = (image_height + text_shape[1]) // 2
+    
+    # Draw a background rectangle for the text
+
+    if highlight:
+        cv2.rectangle(image, (text_x - 5, text_y - text_shape[1] - 10), (text_x + text_shape[0] + 5, text_y + 10), background_color, -1)
+    
+    # Put the text on the image
+    cv2.putText(image, text, (text_x, text_y), font, float(text_size), text_color, font_thickness)
+    
+    return image
+
+
+
 def plot_correlation_scatter(df, xvar, yvar):
     correlation = df[xvar].corr(df[yvar])
 
@@ -110,7 +153,7 @@ def plot_heatmap(df, xvar, yvar, value):
 
 
 
-def depth_to_height1(depth_image, hfov, camera_position, camera_quaternion:quaternion.quaternion):
+def depth_to_height1(depth_image, hfov, camera_position, camera_quaternion: quaternion.quaternion):
     # print(camera_position, camera_quaternion)
     H, W = depth_image.shape
     focal_length_pixels = W / (2 * np.tan(np.radians(hfov / 2)))
@@ -118,18 +161,11 @@ def depth_to_height1(depth_image, hfov, camera_position, camera_quaternion:quate
     x_prime = (j_indices - W / 2)
     y_prime = (i_indices - H / 2)
     
-    # fxy = np.sqrt(x_prime**2 + y_prime**2 + focal_length_pixels**2)
-    # x_local = x_prime * depth_image / fxy
-    # y_local = y_prime * depth_image / fxy
-    # z_local = np.sqrt(depth_image**2 - x_local**2 - y_local**2)
 
     x_local = x_prime * depth_image / focal_length_pixels
     y_local = y_prime * depth_image / focal_length_pixels
     z_local = depth_image
 
-    assert np.all(np.isfinite(x_local)), "x_local contains invalid values"
-    assert np.all(np.isfinite(y_local)), "y_local contains invalid values"
-    assert np.all(np.isfinite(z_local)), "z_local contains invalid values"
     # print(y_local.min(), y_local.max())
     local_points = np.stack((x_local, -y_local, -z_local), axis=-1)
 
@@ -181,9 +217,8 @@ def line_plot(df, column):
     plt.legend()
     plt.show()
 
-def plot_trajectory(df):
-
-    coordinates = np.array(df['agent_location'].tolist())
+def plot_trajectory(agent_location, agent_id):
+    coordinates = np.array(agent_location.tolist())
     x = coordinates[:, 2]
     y = coordinates[:, 1]
     z = coordinates[:, 0]
@@ -196,19 +231,19 @@ def plot_trajectory(df):
     plt.quiver(x[:-1], z[:-1], x[1:] - x[:-1], z[1:] - z[:-1], angles='xy', scale_units='xy', scale=1, color='gray', alpha=0.5)
 
     # Add a colorbar
-    colorbar = plt.colorbar(scatter)
-    colorbar.set_label('Y Coordinate')
+    # colorbar = plt.colorbar(scatter)
+    # colorbar.set_label('Y Coordinate')
 
     # Label start and end points
-    plt.text(x[0], z[0], 'Start', fontsize=12, color='green', ha='right')
-    plt.text(x[-1], z[-1], 'End', fontsize=12, color='red', ha='left')
+    plt.text(x[0], z[0], 'Start', fontsize=12, color='red', ha='right')
+    plt.text(x[-1], z[-1], 'CURRENT', fontsize=12, color='green', ha='left')
 
     # Add labels and title
     plt.xlabel('X Coordinate')
     plt.ylabel('Z Coordinate')
-    plt.title('Agent Trajectory Over Time')
+    plt.title(f'Agent{agent_id} Trajectory Over Time')
 
-    plt.legend()
+    # plt.legend()
     plt.grid(True)
     plt.show()
 
@@ -250,7 +285,7 @@ def gif(path):
     for i in range(len(listdir(path))-1):
         try:
             ndx=0
-            if len(listdir(f"{path}/step{i}")) > 3:
+            if len(listdir(f"{path}/step{i}")) > 5:
                 ndx=1
                 
             np_img_i = cv2.imread(f"{path}/step{i}/image{ndx}.png")
@@ -268,6 +303,33 @@ def gif(path):
             print(f"Image step{i} not found")
             continue
 
-    ani = animation.ArtistAnimation(fig, ims, interval=400, blit=True)
+    ani = animation.ArtistAnimation(fig, ims, interval=600, blit=True)
     ani.save(f'{path}/animagion.gif', writer='imagemagick')
   
+def multi_agent_gif(path):
+    fig = plt.figure()
+    for agent in range(2):
+        ims = []
+        for i in range(len(listdir(path))-1):
+            try:
+                ndx=0
+                if len(listdir(f"{path}/step{i}/agent{agent}")) > 5:
+                    ndx=1
+                    
+                np_img_i = cv2.imread(f"{path}/step{i}/agent{agent}/image{ndx}.png")
+                np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
+                im = plt.imshow(np_img_i)
+                ims.append([im])
+                
+                np_img_i_copy = cv2.imread(f"{path}/step{i}/agent{agent}/copy_image{ndx}.png")
+                np_img_i_copy = cv2.cvtColor(np_img_i_copy, cv2.COLOR_BGR2RGB)
+                im2 = plt.imshow(np_img_i_copy)
+                ims.append([im2])
+
+            except Exception as e:
+                print(e)
+                print(f"Image step{i} not found")
+                continue
+
+        ani = animation.ArtistAnimation(fig, ims, interval=600, blit=True)
+        ani.save(f'{path}/agent{agent}.gif', writer='imagemagick')

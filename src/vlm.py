@@ -1,6 +1,12 @@
+import base64
 from collections import Counter
+from math import e
 import random
+import socket
+from sqlite3 import DatabaseError
 
+from cv2 import log
+import httplib2
 import numpy as np
 from sympy import im
 from src.utils import *
@@ -9,14 +15,17 @@ import numpy as np
 import pdb
 import torch
 import time
-from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, BitsAndBytesConfig, AutoTokenizer, AutoProcessor, VipLlavaForConditionalGeneration, LlavaForConditionalGeneration
-import sentencepiece as spm
-import torch.nn as nn
+# from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, BitsAndBytesConfig, AutoTokenizer, AutoProcessor, VipLlavaForConditionalGeneration, LlavaForConditionalGeneration
+# import sentencepiece as spm
+# import torch.nn as nn
 from PIL import Image
 from src.utils import *
 import io
 import os
 import google.generativeai as genai
+from googleapiclient.errors import HttpError
+from openai import OpenAI
+import requests
 
 class VLM:
     """
@@ -26,13 +35,16 @@ class VLM:
         self.name = "not implemented"
 
     def call(self, visual_prompt: np.array, text_prompt: str):
-        return ""
+        raise NotImplementedError
     
     def call_chat(self, history, visual_prompt, text_prompt, add_timesteps_prompt=True, step=None):
         return ""
 
     def reset(self):
-        pass
+        raise NotImplementedError
+
+    def rewind(self):
+        raise NotImplementedError
 
 
 class LlavaModel(VLM):
@@ -188,22 +200,40 @@ class GeminiModel(VLM):
         
   
         try:
-            t = time.time()
-            #images = [genai.upload_file(im.tobytes()) for im in images]
+            uploaded = []
+            for image in images:
+                im = Image.fromarray(image[:, :, 0:3], mode='RGB')
+                # im.save('logs/temp.png', overwrite=True)
+                retries = 3  # Number of retry attempts
+                for attempt in range(retries):
+                    try:
+                        # Attempt to upload the file
+                        uploaded.append(im)
+                        #uploaded.append(genai.upload_file('logs/temp.png'))
+                        break  # Break the retry loop if successful
+                    except (socket.timeout, httplib2.ServerNotFoundError, HttpError, BrokenPipeError, OSError) as e:
+                        print(f"Error uploading file (Attempt {attempt + 1}/{retries}): {e}")
+                        if attempt < retries - 1:
+                            time.sleep(2 ** attempt) 
+                        else:
+                            raise
             rng_state = random.getstate()
-            response = self.session.send_message([text_prompt] + images)
-            rng_state = random.setstate(rng_state)
-            
-            if len(self.session.history) > 2*history:
-                self.session.history = self.session.history[-2*history:]
-            if add_timesteps_prompt:
-                self.session.history[-2].parts[0].text = f"[PREVIOUS OBSERVATION] Timestep {step}:"
-            else:
-                self.session.history[-2].parts = self.session.history[-2].parts[1:]
-                # response = chat_session.send_message("INSERT_INPUT_HERE")
-            # response = self.model.generate_content([image, text_prompt])
+            t = time.time()
+            response = self.session.send_message([text_prompt] + uploaded)
             finish = time.time() - t
-            time.sleep(max(0.01, 2 - finish))
+            rng_state = random.setstate(rng_state)
+
+            if history == 0:
+                self.session = self.model.start_chat(history=[])
+            else:
+                if len(self.session.history) > 2*history:
+                    self.session.history = self.session.history[-2*history:]
+
+                if add_timesteps_prompt:
+                    self.session.history[-2].parts[0].text = f"[PREVIOUS OBSERVATION] Timestep {step}:"
+                else:
+                    self.session.history[-2].parts = self.session.history[-2].parts[1:]
+
             resp = response.text
             perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
             print(f'\n{self.name} finished inference, took {np.round(finish, 2)} seconds, speed of {np.round(perf["tokens_generated"]/finish, 2)} t/s')
@@ -213,31 +243,169 @@ class GeminiModel(VLM):
             print(resp)
             perf = {'tokens_generated': 0, 'duration': 1, 'input_tokens': 0}
 
-        # history.append(            {
-        #     "role": "model",
-        #     "parts": [
-        #         response.text
-        #     ],
-        # },)
 
         return resp, perf
     
+    def rewind(self):
+        if len(self.session.history) > 1:
+            self.model.rewind()
+
     def reset(self):
+
         del self.session
         self.session = self.model.start_chat(history=[])
 
-    def call(self, visual_prompt: np.array, text_prompt: str, num_samples=None):
+    def call(self, images, text_prompt: str, logprobs=None):
+        ims = [Image.fromarray(image[:, :, 0:3], mode='RGB') for image in images]
 
-        if visual_prompt.shape[-1] == 4:
-            visual_prompt = visual_prompt[:, :, 0:3]
-        image = Image.fromarray(visual_prompt, mode='RGB') 
+        try:
+            t = time.time()
+            response = self.model.generate_content([text_prompt] + ims)
+            finish = time.time() - t
+            perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
+            print(f'{self.name} finished inference, took {finish} seconds, speed of {perf["tokens_generated"]/finish} t/s')
+            resp = response.text
+        except Exception as e:  
+            resp = f"GEMINI API ERROR: {e}"
+            print(resp)
+            perf = {'tokens_generated': 0, 'duration': 1, 'input_tokens': 0}
+        return resp, perf
+    
+import clip
 
-        t = time.time()
-        response = self.model.generate_content([image, text_prompt])
-        finish = time.time() - t
-        time.sleep(max(0.01, 3.5 - finish))
-        perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
-        print(f'{self.name} finished inference, took {finish} seconds, speed of {perf["tokens_generated"]/finish} t/s')
 
-        
-        return response.text, perf
+# Load the CLIP model and the preprocessing method
+
+
+
+class CLIPModel(VLM):
+
+    def __init__(self, model="ViT-B/32"):
+        self.name = model
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model, self.preprocess = clip.load(model, device=self.device)
+    
+    def call(self, images, text_prompt: str, logprobs=None):
+        images = [self.preprocess(Image.fromarray((img_array * 255).astype(np.uint8))) for img_array in images]
+        stacked = torch.stack(images).to(self.device)
+
+        text = clip.tokenize([text_prompt]).to(self.device)
+        with torch.no_grad():
+            image_features = self.model.encode_image(stacked)
+            text_features = self.model.encode_text(text)
+
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+
+        similarities = (image_features @ text_features.T).squeeze()
+        print("Image features:", image_features)
+        print("Text features:", text_features)
+        print("Similarities:", similarities)
+
+        return [s for s in similarities.cpu().numpy()]
+
+
+
+class GPTModel(VLM) :
+
+    def __init__(self, model="gpt-4o-mini", api_key=None, sys_instruction="You are a helpful assistant"):
+        self.name = model
+        self.client = OpenAI()
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+
+        # Set up the configuration
+        self.spend = 0
+        if self.name == 'gpt-4o-mini':
+            self.inp_cost = 0.15/1000000
+            self.out_cost = 0.6/1000000
+        else:
+            self.inp_cost = 5/1000000
+            self.out_cost = 15/1000000
+        self.session_history = []
+        self.base_message = [{'role': 'system', 'content': sys_instruction}]
+
+    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None, logprobs=0):
+        def encode_image_from_rgb(rgb_array):
+            # Convert the RGB array to a format that can be encoded, such as PNG
+            _, buffer = cv2.imencode('.png', cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR))
+            return base64.b64encode(buffer).decode('utf-8')
+        def encode_image(rgb_array):
+            im = Image.fromarray(rgb_array[:, :, 0:3], mode='RGB')
+            im.save('logs/temp.png', overwrite=True)
+            with open('logs/temp.png', "rb") as image_file:
+                return base64.b64encode(image_file.read()).decode('utf-8')
+        message = {
+            "role": "user",
+            "content": [{'type': 'text', 'text': text_prompt}]
+        }
+
+        for image in images:
+            encoded = encode_image(image)
+            message['content'].append(        {
+                "type": "image_url",
+                "image_url": {
+                "url": f"data:image/jpeg;base64,{encoded}",
+                "detail": 'low'
+                }}
+            )
+
+        try:
+            rng_state = random.getstate()
+            t = time.time()
+            payload = {
+                "model": self.name,
+                "messages": self.base_message + [message],
+                "max_tokens": 500,
+                "temperature": 0.2,
+            }
+            if logprobs > 0:
+                payload['logprobs'] = True
+                payload['top_logprobs'] = logprobs
+
+            headers = {
+                'Content-type': 'application/json',
+                'Authorization': f'Bearer {self.api_key}'
+            }
+            # r = self.client.chat.completions.create(model=self.name, messages=self.base_message + [message], max_tokens=500)
+            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload).json()
+            # pdb.set_trace()
+            self.spend += r['usage']['prompt_tokens']*self.inp_cost + r['usage']['completion_tokens']*self.out_cost
+            self.get_spend()
+            print(r['usage'])
+            # pdb.set_trace()
+            response = r['choices'][0]['message']
+            resp = response['content']
+            finish = time.time() - t
+            random.setstate(rng_state)
+            self.session_history.append(message)
+            self.session_history.append(response)
+            if history == 0:
+                self.session_history = []
+            else:
+                if len(self.session_history) > 2*history:
+                    self.session_history = self.session_history[-2*history:]
+            print(f"{self.name} finished inference, took {finish} seconds, speed of {r['usage']['completion_tokens']/finish} t/s")
+            if logprobs > 0:
+                return resp, {"tokens_generated": r['usage']['completion_tokens'], "duration": finish, "input_tokens": r['usage']['prompt_tokens'], "logprobs": r['choices'][0]['logprobs']['content'][0]['top_logprobs']}
+            return resp, {"tokens_generated": r['usage']['completion_tokens'], "duration": finish, "input_tokens": r['usage']['prompt_tokens']}
+                    
+        except Exception as e:
+            print("OPENAI API ERROR")
+            print(e)
+            return "ERROR", {"tokens_generated": 0, "duration": 1, "input_tokens": 0}
+    
+    def call(self, images, text_prompt: str, logprobs):
+        return self.call_chat(0, images, text_prompt, logprobs=logprobs)
+
+    def rewind(self):
+        if len(self.session_history) > 1:
+            self.session_history = self.session_history[:-2]
+#   
+
+    def get_spend(self):
+        print(f"Total spend for {self.name}: {np.round(self.spend, 2)}\n")
+        return self.spend
+
+    def reset(self):
+        self.session_history = []
+
