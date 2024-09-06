@@ -40,25 +40,16 @@ if __name__ == '__main__':
         args.seed = random.randint(0, 10000)
     random.seed(args.seed)
     np.random.seed(args.seed)
-    bench_cls = DynamicBench
-    if args.task == 'obj_nav':
-        bench_cls = NavBench
-    if args.task == 'goat':
-        bench_cls = GOATBench
-    if args.task == 'eqa':
-        bench_cls = EQABench
-    if args.task == 'meqa':
-        bench_cls = MultiAgentEQA
     outer_run_name = datetime.datetime.now().strftime("%m%d%s") + "_seed" + str(args.seed)
     
 
-    arrow_width = 0.7
+    arrow_width = 0.75
     p1 = [(1.7, -np.pi*0.42), (1.9, -np.pi*0.28), (1.9, 0), (1.8, 0.28*np.pi),  (1.7, 0.42*np.pi)]
     p7 = [(1.7, -np.pi*0.46), (1.8, -np.pi*0.36), (1.8, -np.pi*0.3), (1.9, -np.pi*0.19), (1.9, 0), (1.9, np.pi*0.19), (1.8, 0.3*np.pi), (1.8, 0.36*np.pi),  (1.7, 0.46*np.pi)]
     pm = [(2.5, -3*arrow_width), (2.5, -2*arrow_width), (2.5, -arrow_width), (2.5, 0), (2.5, arrow_width),  (2.5, 2*arrow_width), (2.5, 3*arrow_width)]
     points = p7 if args.multi else p1
     sens = [2*arrow_width, 0, -2*arrow_width] if args.multi else [0]
-    fov = 120 if args.multi else 140
+    fov = 125 if args.multi else 140
     args.history = 0 if args.multi else args.history
     sim_kwargs = { 'sensors':sens, 'resolution': (1080, 1920), 'headless': True, 'fov': fov, 'random_seed': args.seed}
     
@@ -87,11 +78,27 @@ if __name__ == '__main__':
         'use_map': True if args.use_map else False
     }
     exp_kwargs={'split': args.split, 'scene_ids': args.scene_ids}
-    if args.task == 'goat':
-        exp_kwargs = {'split': args.split, 'num_scenes': 20}
-        run_kwargs['max_steps_per_goal'] = args.max_steps_per_goal
-    elif args.task == 'obj_nav':
+
+
+    bench_cls = DynamicBench
+    if args.task == 'obj_nav':
+        bench_cls = NavBench
         run_kwargs['goals'] = goals
+
+    if args.task == 'goat':
+        bench_cls = GOATBench
+        exp_kwargs = {'split': 'train', 'num_scenes': 20}
+        run_kwargs['max_steps_per_goal'] = args.max_steps_per_goal
+    if args.task == 'eqa':
+        bench_cls = EQABench
+        hard_qs = [451, 403, 337, 182, 209, 97, 481]
+        # hard_qs = None
+        hard_qs += [360, 150, 201, 119, 210, 466, 246, 66]
+
+        exp_kwargs['scene_ids'] = hard_qs
+
+    if args.task == 'meqa':
+        bench_cls = MultiAgentEQA
 
     nbench = bench_cls(sim_kwargs=sim_kwargs, vlm_agent=vlm_model, exp_kwargs=exp_kwargs, outer_run_name=outer_run_name)
 

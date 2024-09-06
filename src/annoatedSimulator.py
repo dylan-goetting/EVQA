@@ -93,11 +93,11 @@ class AnnotatedSimulator:
             agent_cfg.sensor_specifications.append(depth_sensor_spec)
 
         self.focal_length = calculate_focal_length(fov, self.RESOLUTION[1])
-        agents = [agent_cfg, agent_cfg]
+        agents = [agent_cfg]
         if goal_image_agent:
             goal_cfg = habitat_sim.agent.AgentConfiguration()
             goal_sensor_spec = habitat_sim.CameraSensorSpec()
-            goal_sensor_spec.uuid = f"goal_sensor"
+            goal_sensor_spec.uuid = "goal_sensor"
             goal_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
             goal_sensor_spec.resolution = self.RESOLUTION
             goal_sensor_spec.hfov = 100     
@@ -367,6 +367,7 @@ class AnnotatedSimulator:
         return observations
 
     def get_goal_image(self, goal_position, goal_rotation):
+        assert self.goal_image_agent
         new_agent_state = habitat_sim.AgentState()
         new_agent_state.position = goal_position
         new_agent_state.rotation = goal_rotation

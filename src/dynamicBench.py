@@ -1,24 +1,20 @@
-import asyncio
 import csv
 import gzip
 import json
 from math import e
 import math
 import os
-import re
 from sqlite3 import DatabaseError
 import sys
 import pdb
 import pickle
 import random
-from turtle import distance
+from turtle import distance, position
 from typing import Counter
-import arrow
 from habitat.tasks.nav.nav import TopDownMap
 from habitat.utils.visualizations import maps
 from matplotlib import pyplot as plt
 import numpy as np
-import datetime
 import cv2
 import ast
 import pandas as pd
@@ -41,7 +37,7 @@ class DynamicBench:
         self.sim_kwargs = sim_kwargs
         self.vlm = vlm_agent
         self.map_vlm = GeminiModel('gemini-1.5-pro', 'You are an assistant that specializes in maps. You analyze the map and provide action for the agent to take')
-        self.map_vlm = GPTModel('gpt-4o', sys_instruction='You are an assistant that specializes in maps. You analyze the map and provide action for the agent to take')
+        # self.map_vlm = GPTModel('gpt-4o', sys_instruction='You are an assistant that specializes in maps. You analyze the map and provide action for the agent to take')
 
         self.init_pos = None
         self.exp_kwargs = exp_kwargs
@@ -81,15 +77,37 @@ class DynamicBench:
         recolor_map = np.array(
         [[40, 40, 40], [200, 200, 200], [0, 0, 0]], dtype=np.uint8)
         topdown_map = recolor_map[topdown_map]
+        
+        is_grey = topdown_map == (200, 200, 200)
+        grey_indices = np.where(is_grey)
+        min_x, max_x = np.min(grey_indices[1]), np.max(grey_indices[1])
+        min_y, max_y = np.min(grey_indices[0]), np.max(grey_indices[0])
+
+        padding = 50
+        min_x = max(min_x - padding, 0)
+        max_x = min(max_x + padding, topdown_map.shape[1] - 1)
+        min_y = max(min_y - padding, 0)
+        max_y = min(max_y + padding, topdown_map.shape[0] - 1)
+        self.croppings = (min_x, max_x, min_y, max_y)
+        # Crop the topdown_map to the bounding box with padding
+
         self.topdown_map = topdown_map
+        self.new_topdown_map = topdown_map.copy()
+
+
         print(f'\n===================STARTING RUN: {self.curr_run_name} ===================\n')
         for _ in range(inner_loop):
-            actions = self.step_env(obs)
-            if actions is None:
-                break
-            obs = self.annotatedSimulator.step(actions)
-            self.step += 1
-
+            try:
+                print('STEP ', self.step)
+                actions = self.step_env(obs)
+                if actions is None:
+                    break
+                obs = self.annotatedSimulator.step(actions)
+                self.step += 1
+            except Exception as e:
+                print(e)
+                print('ERROR OCCURRED')
+                
         self.post_run()
     
     def setup_run(self, **run_kwargs):
@@ -98,7 +116,22 @@ class DynamicBench:
     def step_env(self, obs):
         raise NotImplementedError
 
+    def post_run_log(self):
+        s = self.df['agent_location']
+        pairs = list(zip(s[:-1], s[1:]))
+
+        for loc1, loc2 in pairs:
+            c1 = self.toGrid(loc1)
+            c2 = self.toGrid(loc2)
+            cv2.arrowedLine(self.new_topdown_map, c1, c2, (0, 150, 0), 10)
+
+        path = f'logs/{self.outer_run_name}/{self.curr_run_name}/step_FINAL'
+        os.makedirs(path)
+        im = Image.fromarray(self.new_topdown_map, mode='RGB')
+        im.save(f'{path}/final_map.png')
+
     def post_run(self):
+        self.post_run_log()
         self.df.to_pickle(f'logs/{self.outer_run_name}/{self.curr_run_name}/df_results.pkl')
         self.vlm.reset()
         self.annotatedSimulator.sim.close()
@@ -204,11 +237,12 @@ class DynamicBench:
         return ims
 
     def get_costs(self):
+        self.vlm.get_spend()
         print('\n')
-        print(f'GPT Mini would cost: {np.round(self.total_input_tokens*0.15/1000000 + self.total_output_tokens*0.6/1000000, 2)}')
-        print(f'GPT 4o would cost: {np.round(self.total_input_tokens*5/1000000 + self.total_output_tokens*15/1000000, 2)}')
-        print(f'Gemini 1.5pro would cost: {np.round(self.total_input_tokens*3.5/1000000 + self.total_output_tokens*10.50/1000000, 2)}')
-        print(f'Gemini flash would cost: {np.round(self.total_input_tokens*0.35/1000000 + self.total_output_tokens*0.150/1000000, 2)}')
+        # print(f'GPT Mini would cost: {np.round(self.total_input_tokens*0.15/1000000 + self.total_output_tokens*0.6/1000000, 2)}')
+        # print(f'GPT 4o would cost: {np.round(self.total_input_tokens*5/1000000 + self.total_output_tokens*15/1000000, 2)}')
+        # print(f'Gemini 1.5pro would cost: {np.round(self.total_input_tokens*3.5/1000000 + self.total_output_tokens*10.50/1000000, 2)}')
+        # print(f'Gemini flash would cost: {np.round(self.total_input_tokens*0.35/1000000 + self.total_output_tokens*0.150/1000000, 2)}')
         
     def agent_frame_to_image_coords(self, point, agent_state, sensor_state, resolution=None):
         global_p = local_to_global(agent_state.position, agent_state.rotation, point)
@@ -222,13 +256,10 @@ class DynamicBench:
             return self.run_metadata['points']
         height_map = depth_to_height1(depth_image, self.annotatedSimulator.fov, sensor_state.position, 
                                       sensor_state.rotation, )
-        # height_map = height_map < agent_state.position[1] + 0.02
-        height_map = abs(height_map - (agent_state.position[1] - 0.04)) < 0.12
-        #height_map = abs(height_map- agent_state.position[1] + 0.1) < 0.03
-        # abs(height_map - agent_state.position[1]) < 0.1
+        height_map = abs(height_map - (agent_state.position[1] - 0.06)) < 0.12
         
         arrowData = []
-        points = [(1, val) for val in np.linspace(-rnge, rnge, 20)]
+        points = [(1, val) for val in np.linspace(-rnge, rnge, 30)]
         start = self.agent_frame_to_image_coords([0, 0, 0], agent_state, sensor_state, resolution = depth_image.shape)
         arrowData = []
         for _, theta in points:
@@ -237,7 +268,8 @@ class DynamicBench:
             if arrow is not None:
                 arrowData.append(arrow) 
         return arrowData
-    
+
+
     def draw_arrows(self, points, rgb_image, agent_state, sensor_state, chosen_action=None, real_actions={}):
         font = cv2.FONT_HERSHEY_SIMPLEX
         text_color = (0, 0, 0) 
@@ -271,6 +303,7 @@ class DynamicBench:
                     cv2.circle(rgb_image, circle_center, circle_radius, (0, 255, 0), -1)
                 else:
                     cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
+                cv2.circle(rgb_image, circle_center, circle_radius, (255, 0, 0), 2)
                 text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
                 cv2.putText(rgb_image, text, text_position, font, text_size, text_color, text_thickness)
 
@@ -286,10 +319,11 @@ class DynamicBench:
                 cv2.circle(rgb_image, circle_center, circle_radius, (0, 255, 0), -1)
             else:
                 cv2.circle(rgb_image, circle_center, circle_radius, circle_color, -1)
+            cv2.circle(rgb_image, circle_center, circle_radius, (255, 0, 0), 2)
             text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
             cv2.putText(rgb_image, text, text_position, font, text_size, text_color, text_thickness)
 
-            cv2.putText(rgb_image, 'TURN AROUND', (text_position[0]//2, text_position[1] + 80), font, text_size*0.75, (255, 0, 0), 2)
+            cv2.putText(rgb_image, 'TURN AROUND', (text_position[0]//2, text_position[1] + 80), font, text_size*0.75, (255, 0, 0), 3)
 
         return real_actions
     
@@ -342,10 +376,11 @@ class DynamicBench:
         out = (ray[-1][0], ray[-1][1])
         end_ndx = len(ray) - 1
         for i in range(len(ray)-4):
-            st = ray[i:i+2]
-            if sum(s[2] for s in st) == 0:
+            st = ray[i:i+4]
+            if sum(s[2] for s in st) <= 2:
                 end_ndx = i
                 break
+
         out = (ray[end_ndx][0], ray[end_ndx][1])
         out = (np.clip(out[0], 0, W-1), np.clip(out[1], 0, H-1))
                
@@ -353,10 +388,8 @@ class DynamicBench:
         local_coords = global_to_local(agent_state.position, agent_state.rotation, 
                                        local_to_global(sensor_state.position, sensor_state.rotation, camera_coords))   
         mag = np.linalg.norm([local_coords[0], local_coords[2]])
-        if abs(theta) < 1:
-            mag = min(0.6*mag, 3)
-        else:
-            mag = min(0.7*mag, 3)
+        self.update_topdown(mag, theta, agent_state)
+        mag = min(0.65*mag, 3)
         return (mag, theta)
 
         # return (((x1, y1), out), (mag, theta))
@@ -399,45 +432,47 @@ class DynamicBench:
             return intersections
         return None
 
+    def update_topdown(self, mag, theta, agent_state, clip=2):
+        mag = min(0.8*mag, clip)
+        local_coords = np.array([mag*np.sin(theta), 0, -mag*np.cos(theta)])
+        global_coords = local_to_global(agent_state.position, agent_state.rotation, local_coords)
+        grid_coords = self.toGrid(global_coords)
+        agent_coords = self.toGrid(agent_state.position)
 
-    def generate_topdown(self, real_actions, agent_id=0, goal=None, zoom=0.75):
-        map_resolution = self.topdown_map.shape[0:2] 
+        cv2.line(self.new_topdown_map, agent_coords, grid_coords, (0, 255, 0), 50)
+        # pass
+
+    def toGrid(self, position):
+        c = maps.to_grid(position[2], position[0], self.topdown_map.shape[0:2] , self.annotatedSimulator.sim)
+        return (c[1], c[0])
+
+
+    def generate_topdown(self, real_actions, agent_id=0, goal=None, zoom=12):
 
         agent_state = self.get_agent_state(agent_id)
-        # real_actions = real_actionss[agent_id]
-        colors = [(0, 255, 0)]
-        if len(self.df) > 0:
-            loc1 = self.df['agent_location'].iloc[-1]
-            loc2 = agent_state.position
-            c1 = maps.to_grid(loc1[2], loc1[0], map_resolution, self.annotatedSimulator.sim)
-            c1 = (c1[1], c1[0])
-            c2 = maps.to_grid(loc2[2], loc2[0], map_resolution, self.annotatedSimulator.sim)
-            c2 = (c2[1], c2[0])
-            cv2.line(self.topdown_map, c1, c2, colors[agent_id], 70)
-            cv2.circle(self.topdown_map, c1, radius=8, color=colors[agent_id], thickness=-1)
-            # self.draw_slice(self.topdown_map, agent_state)
-        if goal is not None:
-            goal_coords = maps.to_grid(goal[2], goal[0], map_resolution, self.annotatedSimulator.sim)
-            goal_coords = (goal_coords[1], goal_coords[0])
-            cv2.circle(self.topdown_map, goal_coords, radius=25, color=(255, 255, 0), thickness=-1)
+        agent_coords = self.toGrid(agent_state.position)
+
+        # if goal is not None:
+        #     goal_coords = self.toGrid(goal)
+        #     cv2.circle(self.topdown_map, goal_coords, radius=25, color=(255, 255, 0), thickness=-1)
             # cv2.putText(self.topdown_map, 'GOAL', (goal_coords[0] + 10, goal_coords[1] + 10), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)  
         
         topdown_map = self.topdown_map.copy()
-        text_size = 1
+        self.topdown_map = self.new_topdown_map
+        self.new_topdown_map = self.topdown_map.copy()
+        text_size = 1.25
         text_thickness = 1
-        agent_coords = maps.to_grid(agent_state.position[2], agent_state.position[0], map_resolution, self.annotatedSimulator.sim)
-        agent_coords = (agent_coords[1], agent_coords[0])
+        
         font = cv2.FONT_HERSHEY_SIMPLEX
         if self.step - self.turned >= 3:
-            real_actions[(0.4, np.pi)] = 0
+            real_actions[(0.75, np.pi)] = 0
         for (mag, theta), action in real_actions.items():
             local_pt = np.array([mag * np.sin(theta), 0, -mag * np.cos(theta)])
             global_pt = local_to_global(agent_state.position, agent_state.rotation, local_pt)
-            act_coords = maps.to_grid(global_pt[2], global_pt[0], map_resolution, self.annotatedSimulator.sim)
-            act_coords = (act_coords[1], act_coords[0]) 
+            act_coords = self.toGrid(global_pt)
 
-            cv2.arrowedLine(topdown_map, tuple(agent_coords), tuple(act_coords), (255, 0, 0), 2, tipLength=0.05)
-            cv2.line(self.topdown_map, agent_coords, act_coords, (0, 255, 0), 50)
+            cv2.arrowedLine(topdown_map, tuple(agent_coords), tuple(act_coords), (255, 0, 0), 5, tipLength=0.05)
+            #cv2.line(self.topdown_map, agent_coords, act_coords, (0, 255, 0), 50)
             text = str(action) 
             (text_width, text_height), _ = cv2.getTextSize(text, font, text_size, text_thickness)
             circle_center = (act_coords[0], act_coords[1])
@@ -447,22 +482,23 @@ class DynamicBench:
             # put_text_on_image(self.topdown_map, '', background_color=(255, 255, 255), location='top_left', text_size=text_size, text_thickness=text_thickness+1)
             cv2.putText(topdown_map, text, text_position, font, text_size, (0, 0, 0), text_thickness+1)
 
-        cv2.circle(topdown_map, agent_coords, radius=15, color=(255, 0, 0), thickness=-1)
-        label_text = f"Agent{agent_id}"
-        text_offset = (10, -10)  # Offset to position text near the circle
-        # Calculate position for the text label
-        text_position = (agent_coords[0] + text_offset[0], agent_coords[1] + text_offset[1])
+        # label_text = f"Agent{agent_id}"
+        # text_offset = (10, -10)  # Offset to position text near the circle
+        # text_position = (agent_coords[0] + text_offset[0], agent_coords[1] + text_offset[1])
             # cv2.putText(topdown_map, label_text, text_position, font, text_size+0.5, colors[agent_id], font_thickness, cv2.LINE_AA)
 
         # Zoom into agent_coords
-        half_zoom_size = int(map_resolution[0]*zoom) 
+        cv2.circle(topdown_map, agent_coords, radius=15, color=(255, 0, 0), thickness=-1)
+        right = (agent_state.position[0] + zoom, 0, agent_state.position[2])
+        right_coords = self.toGrid(right)
+        delta = abs(agent_coords[0] - right_coords[0])
         x, y = agent_coords
-        
         # Calculate crop boundaries
-        x1 = max(0, x - half_zoom_size)
-        x2 = min(topdown_map.shape[1], x + half_zoom_size)
-        y1 = max(0, y - half_zoom_size)
-        y2 = min(topdown_map.shape[0], y + half_zoom_size)
+        (min_x, max_x, min_y, max_y)  = self.croppings
+        x1 = max(min_x, x - delta)
+        x2 = min(max_x, x + delta)
+        y1 = max(min_y, y - delta)
+        y2 = min(max_y, y + delta)
         
         # Crop the topdown_map
         zoomed_map = topdown_map[y1:y2, x1:x2]
@@ -470,50 +506,50 @@ class DynamicBench:
         # put_text_on_image(zoomed_map, label_text, background_color=(255, 255, 255), location='top_left', text_size=text_size+1, text_thickness=text_thickness+1)
         return zoomed_map
 
-    def draw_slice(self, topdown_map, agent_state):
-        map_resolution = topdown_map.shape[0:2]
-        agent_coords = maps.to_grid(agent_state.position[2], agent_state.position[0], map_resolution, self.annotatedSimulator.sim)
-        agent_coords = (agent_coords[1], agent_coords[0])
+    # def draw_slice(self, topdown_map, agent_state):
+    #     map_resolution = topdown_map.shape[0:2]
+    #     agent_coords = maps.to_grid(agent_state.position[2], agent_state.position[0], map_resolution, self.annotatedSimulator.sim)
+    #     agent_coords = (agent_coords[1], agent_coords[0])
 
-        fov_rad = self.annotatedSimulator.fov * np.pi / 180
-        fov_rad = fov_rad / 2
+    #     fov_rad = self.annotatedSimulator.fov * np.pi / 180
+    #     fov_rad = fov_rad / 2
 
-        local_pt = np.array([1 * np.sin(fov_rad), 0, -1 * np.cos(fov_rad)])
-        global_pt = local_to_global(agent_state.position, agent_state.rotation, local_pt)
-        act_coords = maps.to_grid(global_pt[2], global_pt[0], map_resolution, self.annotatedSimulator.sim)
-        act_coords = (act_coords[1], act_coords[0]) 
-        agent_x, agent_y = agent_coords
-        act_x, act_y = act_coords
+    #     local_pt = np.array([1 * np.sin(fov_rad), 0, -1 * np.cos(fov_rad)])
+    #     global_pt = local_to_global(agent_state.position, agent_state.rotation, local_pt)
+    #     act_coords = maps.to_grid(global_pt[2], global_pt[0], map_resolution, self.annotatedSimulator.sim)
+    #     act_coords = (act_coords[1], act_coords[0]) 
+    #     agent_x, agent_y = agent_coords
+    #     act_x, act_y = act_coords
         
-        # Compute differences
-        dx = act_x - agent_x
-        dy = act_y - agent_y
+    #     # Compute differences
+    #     dx = act_x - agent_x
+    #     dy = act_y - agent_y
         
-        # Calculate the angle in radians
-        angle_rad = np.arctan2(dy, dx)
+    #     # Calculate the angle in radians
+    #     angle_rad = np.arctan2(dy, dx)
         
-        # Convert the angle to degrees
-        end_ang = np.degrees(angle_rad)
+    #     # Convert the angle to degrees
+    #     end_ang = np.degrees(angle_rad)
 
 
-        local_pt = np.array([1 * np.sin(-fov_rad), 0, -1 * np.cos(-fov_rad)])
-        global_pt = local_to_global(agent_state.position, agent_state.rotation, local_pt)
-        act_coords = maps.to_grid(global_pt[2], global_pt[0], map_resolution, self.annotatedSimulator.sim)
-        act_coords = (act_coords[1], act_coords[0]) 
-        agent_x, agent_y = agent_coords
-        act_x, act_y = act_coords
+    #     local_pt = np.array([1 * np.sin(-fov_rad), 0, -1 * np.cos(-fov_rad)])
+    #     global_pt = local_to_global(agent_state.position, agent_state.rotation, local_pt)
+    #     act_coords = maps.to_grid(global_pt[2], global_pt[0], map_resolution, self.annotatedSimulator.sim)
+    #     act_coords = (act_coords[1], act_coords[0]) 
+    #     agent_x, agent_y = agent_coords
+    #     act_x, act_y = act_coords
         
-        # Compute differences
-        dx = act_x - agent_x
-        dy = act_y - agent_y
+    #     # Compute differences
+    #     dx = act_x - agent_x
+    #     dy = act_y - agent_y
         
-        # Calculate the angle in radians
-        angle_rad = np.arctan2(dy, dx)
+    #     # Calculate the angle in radians
+    #     angle_rad = np.arctan2(dy, dx)
         
-        # Convert the angle to degrees
-        start_ang = np.degrees(angle_rad)
+    #     # Convert the angle to degrees
+    #     start_ang = np.degrees(angle_rad)
 
-        cv2.ellipse(topdown_map, agent_coords, (200, 200), 0, end_ang, start_ang, (0, 255, 0), -1)
+    #     cv2.ellipse(topdown_map, agent_coords, (200, 200), 0, end_ang, start_ang, (0, 255, 0), -1)
 
 class NavBench(DynamicBench):
 
@@ -540,7 +576,8 @@ class NavBench(DynamicBench):
     
     def setup_run(self, history=7, mask_thinking=True, add_timesteps_prompt=True, draw_arrows=True,
             points=None, consistency=1, goals = [], priv_actions=False, uniform=True, use_map=True):
-
+        self.goal_loc = [0, 0, 0]
+        # self.run_metadata['use_map'] = use_map
         while True:
             try:
                 f = random.choice(self.files)
@@ -548,46 +585,60 @@ class NavBench(DynamicBench):
                 self.sim_kwargs['scene_id'] = f[2:5]
                 self.sim_kwargs['scene_path'] = f'datasets/hm3d/{self.split}/00{f[2:5]}-{hsh}/{hsh}.basis.glb'
                 self.annotatedSimulator = AnnotatedSimulator(**self.sim_kwargs)
-                self.annotatedSimulator.priv_actions = True if priv_actions else False
+                if f[2:5] == '814':
+                    self.goal_loc = np.array([-1.5041651e+01, 4.8131943e-03, -2.1016624e+00])
+                if f[2:5] == '891':
+                    self.goal_loc = np.array([-10.326839,     0.07216382,   2.4435563 ])
+                if f[2:5] == '871':
+                    self.goal_loc = np.array([ 8.283967,    0.04654188, -2.368276  ])
+                self.curr_target = "DIAMOND RING" #'WASHER AND DRYER'
+                self.curr_related_objects = []
+                while True:
+                    point = self.annotatedSimulator.sim.pathfinder.get_random_navigable_point()
+                    
+                    # self.init_pos = point
+                    # break
 
-                random.shuffle(goals)            
-                for target, related in goals:
-                    tries = 0
-                    if os.path.exists(f'logs/{self.outer_run_name}/{target}_{self.annotatedSimulator.scene_id}'):
-                        print(f'{target}_{self.annotatedSimulator.scene_id} ALREADY EXISTS')
-                        continue
-                    self.curr_target = target
-                    self.curr_related_objects = []
-                    for word in related + [target]:
-                        self.curr_related_objects += self.annotatedSimulator.search_objects(word, exact=False)
-                    print(f'Targeting object: {target}')
-                    print(f'related objects: {len([obj.category.name() for obj in self.curr_related_objects])}')
-                    if len(self.curr_related_objects) == 0:
-                        continue
-                    for _ in range(200):
-                        point = self.annotatedSimulator.sim.pathfinder.get_random_navigable_point()
-                        for idx, floor_height in enumerate(self.annotatedSimulator.floors):
-                            tries += 1
-                            if abs(point[1] - floor_height) < 0.1:
-                                floor = idx
-                                distances = [np.linalg.norm(point - obj.aabb.center) for obj in self.curr_related_objects if obj.aabb.center[1] < self.annotatedSimulator.floors[floor+1] and obj.aabb.center[1] > floor_height]
-                                min_dist = 7 if target in ['kitchen', 'living room'] else 5.5
-                                self.init_pos = np.array([-8.071849, 0.07216382, 8.127762])
-                                self.goal  = np.array([4.9480886,  0.07216382, 6.7395573])
-                                break
-                                if len(distances) > 0 and min(distances) > min_dist and min(distances) < min_dist + 10:
-                                    # print('found point, min_dist', min(distances), f'thresh: {min_dist}')
-                                    self.init_pos = point
-                                    break
-                        if self.init_pos is not None:
-                            break
-                    if self.init_pos is not None:
+                    if abs(point[1] - self.goal_loc[1]) < 0.1 and np.linalg.norm(self.goal_loc-point) > 0:
+                        self.init_pos = point
                         break
-                    print('sampling again')
-                if self.init_pos is not None:
-                    break
-                self.init_pos = None
-                print(f'Scene id {self.annotatedSimulator.scene_id} Could not find a valid starting position')
+                break
+                # random.shuffle(goals)            
+                # for target, related in goals:
+                #     tries = 0
+                #     if os.path.exists(f'logs/{self.outer_run_name}/{target}_{self.annotatedSimulator.scene_id}'):
+                #         print(f'{target}_{self.annotatedSimulator.scene_id} ALREADY EXISTS')
+                #         continue
+                #     self.curr_target = target
+                #     self.curr_related_objects = []
+                #     for word in related + [target]:
+                #         self.curr_related_objects += self.annotatedSimulator.search_objects(word, exact=False)
+                #     print(f'Targeting object: {target}')
+                #     print(f'related objects: {len([obj.category.name() for obj in self.curr_related_objects])}')
+                #     if len(self.curr_related_objects) == 0:
+                #         continue
+                #     for _ in range(200):
+                #         point = self.annotatedSimulator.sim.pathfinder.get_random_navigable_point()
+                #         for idx, floor_height in enumerate(self.annotatedSimulator.floors):
+                #             tries += 1
+                #             if abs(point[1] - floor_height) < 0.1:
+                #                 floor = idx
+                #                 distances = [np.linalg.norm(point - obj.aabb.center) for obj in self.curr_related_objects if obj.aabb.center[1] < self.annotatedSimulator.floors[floor+1] and obj.aabb.center[1] > floor_height]
+                #                 min_dist = 7 if target in ['kitchen', 'living room'] else 5.5
+               
+                #                 if len(distances) > 0 and min(distances) > min_dist and min(distances) < min_dist + 10:
+                #                     # print('found point, min_dist', min(distances), f'thresh: {min_dist}')
+                #                     self.init_pos = point
+                #                     break
+                #         if self.init_pos is not None:
+                #             break
+                #     if self.init_pos is not None:
+                #         break
+                #     print('sampling again')
+                # if self.init_pos is not None:
+                #     break
+                # self.init_pos = None
+                # print(f'Scene id {self.annotatedSimulator.scene_id} Could not find a valid starting position')
 
             except Exception as e:
                 print(e)
@@ -608,16 +659,16 @@ class NavBench(DynamicBench):
             'scene_id': self.annotatedSimulator.scene_id,
             'init_pos': self.init_pos,
             'uniform': uniform,
-            'use_map': use_map
+            'use_map': 2
         }
         self.annotatedSimulator.priv_actions = False
         self.annotatedSimulator.do_annotate_image = False
         self.annotatedSimulator.objects_to_annotate = self.curr_related_objects
         self.set_state()
-        if random.random() < 0.5:
-            self.curr_target = "Large painting of an owl, on the wall behind a table"
-        else:
-            self.curr_target = "staircase"
+        # if random.random() < 0.5:
+        #     self.curr_target = "Large painting of an owl, on the wall behind a table"
+        # else:
+        #     self.curr_target = "staircase"
 
         self.curr_run_name = f'{self.curr_target}_{self.annotatedSimulator.scene_id}_{random.randint(0, 1000)}'
         obs = self.annotatedSimulator.step([('forward', 0)])
@@ -637,15 +688,17 @@ class NavBench(DynamicBench):
         for sensor in self.annotatedSimulator.sensors:
             real_actions = self.draw_arrows(points, obs[f'color_sensor_{sensor}']['image'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], real_actions=real_actions)
         
-        zoomed_map = self.generate_topdown(real_actions, goal=self.goal, zoom=0.75)
+        zoomed_map = self.generate_topdown(real_actions, zoom=10)
 
         multi = len(self.annotatedSimulator.sensors) > 1
         prompt = (
-        f"First, analyze your updated camera observation and tell me the spatial layout of what you see. "
+        # f"First, analyze your updated camera observation and tell me the spatial layout of what you see. "
+        f"I have lost my diamond ring! Your task is to search every inch of this floor to help me find it. It is a huge, bright diamond that is unmistakable. "
         f"There are {len(real_actions)} red arrows superimposed onto your observation{'s' if multi else''}, which represent potential actions. " 
         f"These are labeled with a number in a white circle, which represent the location you would move to if you took that action. {'Note that special action 0 turns you around completely' if self.step - self.turned >= 3 else ''}"
-        f"Your task is to navigate to a {self.curr_target.upper()}. Think of a high level plan on how you can reach a {self.curr_target.upper()} from where you are now. If you have already comleted, your goal choose special action -1 (done). "
-        f"Think about how each action will move you. Then, select one action from the image and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS"
+        #f"Your task is to navigate to the {self.curr_target.upper()}. Think of a high level plan on how you can reach the {self.curr_target.upper()} from where you are now. If you have already reached the {self.curr_target.upper()} choose special action -1 (done). "
+        f"First, tell me what you see in your sensor observations. Then, tell me a high level plan on how you will find the ring and where you will go next"
+        f"Think about how each action will move you. Lastly, select one action from the image and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS"
         )
 
         images = self.get_sensor_images(obs, convert=False)
@@ -661,15 +714,20 @@ class NavBench(DynamicBench):
             # f"If you have already comleted your goal choose special action -1. Return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS "
             # # Think of a high level plan on how you can reach a {self.curr_target.upper()} from where you are now. ")
             # )
-            f"Your task is to navigate to the GOAL, and you have {len(real_actions)} actions available to you. "
-            "\nYou have a topdown map of the environment, with navigable area shown in LIGHT GREY and obstacles shown in BLACK. This map shows where you have been in the past, in GREEN. Your current location is shown by a RED dot. "
-            "The actions are red arrows and white circles, and show the location you would move to if you took that action. "
-            "Your goal is labeled as a YELLOW CIRCLE. If you do not see the goal in the map, it is because you are too far away and need to explore. First, describe the map you see. Then tell me which actions will help you reach this goal, and remember the light grey areas are navigable and the black areas are not "    
+            f"I have lost my diamond ring! Your task is to search every inch of this floor to help me find it. It is a huge, bright diamond that is unmistakable. "
+
+            # f"Your task is to navigate to the {self.curr_target.upper()}, and "you have {len(real_actions)} actions available to you. "
+            f"There are {len(real_actions)} red arrows superimposed onto your observation{'s' if multi else''}, which show where you would move to if you chose that action number ." 
+            "\nTo help you with exploration, you have a topdown map of the environment, with navigable area shown in LIGHT GREY and obstacles shown in BLACK. This map shows where you have been in the past, in GREEN. Your current location is shown by a RED dot. "
+            f"There are {len(real_actions)} actions, which are red arrows and white circles, and show the location you would move to if you took that action. Use the map to identify unexplored rooms (light grey) and strategically plan out actions that help you reach these unexplored areas. Note you will sometimes need to backtrack through green areas to reach new rooms. "
+            # "If you have already reached the {self.curr_target.upper()} choose special action -1 (done). "
+            "First, describe the map you see, as well as your sensor observations. Then, use your map and your observations to strategically think and tell me which actions will help cover new territory the most, and remember the light grey areas are navigable and the black areas are not "    
             f"Return your action as {{'action': <action_number>}}"
             # Think of a high level plan on how you can reach a {self.curr_target.upper()} from where you are now. ")
             )
-            self.vlm = self.map_vlm
-            images = [zoomed_map]
+            # self.vlm = self.map_vlm
+            images.append(zoomed_map)
+            # images = [zoomed_map]
         
         row = {'actions': -10, 'tokens_generated':0, 'success': 1, 'metadata': self.run_metadata,
         'speed': 0, 'scene_id': self.annotatedSimulator.scene_id,
@@ -677,12 +735,19 @@ class NavBench(DynamicBench):
         row, metadata, resp = self.agent_self_consitency(prompt, images, row, self.run_metadata['consistency'])
 
         row['goal_object'] = self.curr_target
-            
+
+        rgb = self.topdown_map
+        green = np.sum(rgb == (0, 255, 0))
+        light_grey = np.sum(rgb == (200, 200, 200))
+        row['explored'] = green / (green + light_grey) 
         min_dist = 1000
         closest_object = None
         # if not self.run_metadata['use_map']: 
 
         #     images.append(zoomed_map)
+        if row["actions"] <= len(list(real_actions.keys())) and row["actions"] > 0:
+            mag, theta = list(real_actions.keys())[row["actions"]-1]
+            self.update_topdown(mag, theta, agent_state, mag)
         images = self.get_sensor_images(obs, convert=False) + [zoomed_map]
 
         copies = []
@@ -700,7 +765,8 @@ class NavBench(DynamicBench):
             copies.append(copy)
         copies.append(self.topdown_map)
         row['closest_object'] = closest_object
-        row['distance_to_goal'] = min_dist
+        # row['distance_to_goal'] = min_dist
+        row['distance_to_goal'] = np.linalg.norm(agent_state.position - self.goal_loc)
         metadata['DIST TO GOAL'] = row['distance_to_goal']
 
         self.df = pd.concat([self.df, pd.DataFrame([row])], ignore_index=True)
@@ -765,7 +831,7 @@ class GOATBench(DynamicBench):
 
 
     def setup_run(self, history=7, mask_thinking=True, add_timesteps_prompt=True, draw_arrows=True,
-            points=None, consistency=1, max_steps_per_goal=5, priv_actions=False):
+            points=None, consistency=1, max_steps_per_goal=5, priv_actions=False, use_map=False, uniform=False):
         while True:
             goat_scene = random.choice(self.goat_data)
             episode = random.choice(goat_scene['episodes'])
@@ -774,7 +840,6 @@ class GOATBench(DynamicBench):
             if os.path.exists(f'logs/{self.outer_run_name}/{episode["episode_id"]}_{f[2:5]}'):
                 continue
             break
-
 
         self.sim_kwargs['scene_id'] = f[2:5]
         self.sim_kwargs['scene_path'] = f'datasets/hm3d/{self.split}/{f}/{glb}'
@@ -822,7 +887,7 @@ class GOATBench(DynamicBench):
         goal = self.curr_episode[self.curr_goal_ndx]
 
         if goal['mode'] == 'object':
-            print('Current general object:', goal['name'])
+            print('Current general object:', goal['name'], f'there are {len(goal["objects"])} instances')
         if goal['mode'] == 'description':
             print('Current desc:', goal['lang_desc'])
         if goal['mode'] == 'image':
@@ -840,7 +905,9 @@ class GOATBench(DynamicBench):
             'seed': self.random_seed,
             'scene_id': self.annotatedSimulator.scene_id,
             'init_pos': self.init_pos,
-            'max_steps_per_goal': max_steps_per_goal
+            'max_steps_per_goal': max_steps_per_goal,
+            'use_map': use_map,
+            'uniform': uniform
 
         }
 
@@ -848,45 +915,73 @@ class GOATBench(DynamicBench):
         return obs
 
     def step_env(self, obs):
-        agent_state = self.get_agent_state()
         goal = self.curr_episode[self.curr_goal_ndx]
 
         if goal['mode'] == 'object':
-            inst = f'Find the nearest {goal["name"]} and navigate to it. Which room you would find this {goal["name"]} in? Do you see a {goal["name"]} in your current observations?' 
+            inst = f'Find the nearest {goal["name"]} and navigate to it. '
+            inst2 =  f'Tell me which room you would find this {goal["name"]} in? Do you see a {goal["name"]} in your current observations?' 
         if goal['mode'] == 'description':
-            inst = f"Find and navigate to the {goal['lang_desc']} Which room you would find this {goal['name']} in? "
+            inst = f"Find and navigate to the {goal['lang_desc']} "
+            inst2 =  f"Tell me which room you would find this {goal['name']} in, and in which direction you should go. "
         if goal['mode'] == 'image':
-            inst = f"Observe the image labeled GOAL IMAGE. Find this specific {goal['name']} shown in the image and navigate to it"
+            inst = f"Observe the image labeled GOAL IMAGE. Find this specific {goal['name']} shown in the image and navigate to it. "
+            inst2 =  f"Tell me which room you would find this {goal['name']} in, and which in which direction you should go ."
 
-        prompt = f"You have moved to a new location within the environment. First, describe to me the spatial layout of the room you see, and any notable objects. "
-        prompt += (
-        # f"First, analyze your updated camera observation and tell me the spatial layout of what you see. "
-        f"TASK: {inst}. "
-        f"There may be some arrows superimposed onto the image, which represent potential actions. ")
-        prompt += f"""In addition to any actions labeled on the image, you have the following special actions.
-{{
-0: turn completely around, use this when you dont see any good arrows, or IF THERE ARE NO ARROWS labeled on the image. 
--1: DONE, have already navigated to the the {goal['name']}!!{'. Make sure it matches the one in the description' if goal['mode'] in ['description', 'image'] else ''}
-}}
-Tell me the following: how you plan to reach {goal['name']} from where you are now? Do you need to move into a new room? Lastly, select one action from the image or the special actions and return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS. 
-"""
+        agent_state = self.get_agent_state()
+        points = []
+        rnge = 1.5 if len(self.annotatedSimulator.sensors) == 1 else 2.2
+        spacing = 0.35 if len(self.annotatedSimulator.sensors) == 1 else 0.29
         
 
+        for sensor in self.annotatedSimulator.sensors:
+            points += self.get_arrow_options(obs[f'depth_sensor_{sensor}'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], rnge)
+        points = self.select_arrrows(points, spacing)
+        real_actions = {}    
+        for sensor in self.annotatedSimulator.sensors:
+            real_actions = self.draw_arrows(points, obs[f'color_sensor_{sensor}']['image'], agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], real_actions=real_actions)
+        
+        zoomed_map = self.generate_topdown(real_actions, zoom=10)
 
-        if len(self.run_metadata['sensors']) > 1:
-            num_sensors = len(self.annotatedSimulator.sensors)
-            prompt = f"You have moved to a new location within the environment. First, briefly describe to me what you see in each of your sensors. "
-            prompt += (
-            f"TASK:\n{inst}\n")
-            f"There are arrows superimposed onto the {num_sensors} different images, which represent potential actions. "
-            prompt += f"""In addition to any actions labeled on the images, you have the following special actions.
-{{
-0: turn completely around, use this when you DONT SEE ANY GOOD ACTIONS, and want fresh observations. 
--1: DONE, have already navigated to the the {goal['name']}!!{'. Make sure it matches the one in the description' if goal['mode'] in ['description', 'image'] else ''}
-}}
-Tell me the following: how you plan to reach {goal['name']} from where you are now? Do you need to move into a new room? Lastly, select one action from the image or the special actions and return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS. 
-"""            
+        multi = len(self.annotatedSimulator.sensors) > 1
+        prompt = (
+
+        f"TASK: {inst} "
+        # f"First, analyze your updated camera observation and tell me the spatial layout of what you see. "
+        f"There are {len(real_actions)} red arrows superimposed onto your observation{'s' if multi else''}, which represent potential actions. " 
+        f"These are labeled with a number in a white circle, which represent the location you would move to if you took that action. {'Note that special action 0 turns you around completely' if self.step - self.turned >= 3 else ''}"
+        #f"Your task is to navigate to the {self.curr_target.upper()}. Think of a high level plan on how you can reach the {self.curr_target.upper()} from where you are now. If you have already reached the {self.curr_target.upper()} choose special action -1 (done). "
+        f"First, tell me what you see in your sensor observations, and if you have any leads on finding the {goal['name']}. Second, {inst2}. If you have already reached the {goal['name']} choose special action -1 (done). "
+        f"Think about how each action will hlp you achieve this goal. Lastly, select one action from the image and explain how it helps you reach your goal. Return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS"
+        )
+
         images = self.get_sensor_images(obs, convert=False)
+        if self.run_metadata['use_map']:
+            prompt = (
+            f"TASK: {inst}. First, analyze your updated camera observation and tell me the spatial layout of what you see. "
+            # f"Your task is to navigate to the {self.curr_target.upper()}, and "you have {len(real_actions)} actions available to you. "
+            f"There are {len(real_actions)} red arrows superimposed onto your observation{'s' if multi else''}, which represent potential actions. " 
+            f"These are labeled with a number in a white circle, which represent the location you would move to if you took that action. {'Note that special action 0 turns you around completely' if self.step - self.turned >= 3 else ''}"
+            "\nTo help you with exploration, you have a topdown map of the environment, with navigable area shown in LIGHT GREY and obstacles shown in BLACK. This map shows where you have been in the past, in GREEN. Your current location is shown by a RED dot. "
+            "The actions are red arrows and white circles, and show the location you would move to if you took that action. Use the map to identify unexplored rooms (light grey) and strategically plan out actions that help you reach these unexplored areas. Note you will sometimes need to backtrack through green areas to reach new rooms. "
+            # "If you have already reached the {self.curr_target.upper()} choose special action -1 (done). "
+            "First, describe the map you see, as well as your sensor observations. Then, use your both your sensor observations and your map to strategically think and tell me which actions will help you achieve your goal the most, and remember the light grey areas are navigable and the black areas are not "    
+            f"Return your action as {{'action': <action_number>}}"
+            # Think of a high level plan on how you can reach a {self.curr_target.upper()} from where you are now. ")
+            )
+            # self.vlm = self.map_vlm
+            images.append(zoomed_map)        # f"First, analyze your updated camera observation and tell me the spatial layout of what you see. "
+# """
+# {{
+# 0: turn completely around, use this when you dont see any good arrows, or IF THERE ARE NO ARROWS labeled on the image. 
+# -1: DONE, have already navigated to the the {goal['name']}!!{'. Make sure it matches the one in the description' if goal['mode'] in ['description', 'image'] else ''}
+# }}
+# Tell me the following: how you plan to reach {goal['name']} from where you are now? Do you need to move into a new room? Lastly, select one action from the image or the special actions and return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS. 
+# """
+# Tell me the following: how you plan to reach {goal['name']} from where you are now? Do you need to move into a new room? Lastly, select one action from the image or the special actions and return it as {{'action': <action_key>}}. Note you CANNOT GO THROUGH CLOSED DOORS. 
+
+        images = self.get_sensor_images(obs, convert=False) + [zoomed_map]
+
+
         if goal['mode'] == 'image':
             position = goal['image_position']
             rotation = goal['image_rotation']
@@ -929,9 +1024,7 @@ Tell me the following: how you plan to reach {goal['name']} from where you are n
         copies = []
         for sensor in self.annotatedSimulator.sensors:
             copy = obs[f'color_sensor_{sensor}']['image'].copy()
-            depth_to_height1()
-
-            self.annotatedSimulator.draw_arrows(copy, agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], self.run_metadata['points'], chosen_action=row['actions'])
+            self.draw_arrows(real_actions, copy, agent_state, agent_state.sensor_states[f'color_sensor_{sensor}'], chosen_action=row['actions'], real_actions=real_actions)
             # Assuming `copy` is the image you want to modify
             if new_goal and goal_reached:
                 background_color = (0, 100, 0)  # Green color
@@ -939,8 +1032,10 @@ Tell me the following: how you plan to reach {goal['name']} from where you are n
                 background_color = (100, 0, 0) # Red color
             else:
                 background_color = (255, 255, 255)  # White color
-            put_text_on_image(copy, f"{self.curr_goal_ndx}: {goal['name']}-{goal['mode'][0]}", background_color=background_color, location='top_left', text_size=2.3)
+            put_text_on_image(copy, f"{self.curr_goal_ndx}: {goal['name']}({goal['mode'][0]})", background_color=background_color, location='top_left', text_size=2.3)
             copies.append(copy)
+
+        copies.append(self.topdown_map)
 
 
         if self.run_metadata['mask_thinking'] and row['success'] == 1 and self.run_metadata['history'] > 0:
@@ -968,12 +1063,12 @@ Tell me the following: how you plan to reach {goal['name']} from where you are n
         if self.step % self.log_freq == 0 or row['success'] == 0:
             images = [Image.fromarray(im[:, :, 0:3], mode='RGB') for im in images]
             copies = [Image.fromarray(im[:, :, 0:3], mode='RGB') for im in copies]
-            self.log(prompt, images, resp, row['success'], metadata, copy_images=copies)
+            self.log(images, resp, row['success'], metadata, copy_images=copies)
             
         if done:
             return None
-        actions = self.annotatedSimulator.move_choices(row['actions'], points=self.run_metadata['points'] if self.run_metadata['arrows'] else None)        
-        return actions
+        self.vlm.get_spend()
+        return self.annotatedSimulator.move_choices(row['actions'], points=list(real_actions.keys()))   
     
 
 
@@ -1003,16 +1098,20 @@ class EQABench(DynamicBench):
     task = 'EQA_BENCH'
 
     def setup_experiment(self, split, scene_ids):
+        if scene_ids is None:
+            scene_ids = range(515)
         file1 = 'datasets/EQA/questions.csv'
         file2 = 'datasets/EQA/scene_init_poses.csv'
-        self.answerVLM = GeminiModel(sys_instruction='You are a helpful assistant that answers questions about the observations you see', 
+        self.answerVLM = GeminiModel(sys_instruction='You made to assist an agent in an environemnt. The agent sends you images and queries, and you intelligently respond with an answer ', 
                                   model='gemini-1.5-pro')
         # self.answerVLM = GPTModel(sys_instruction='You are a helpful assistant that answers questions about the observations you see', 
         #                           model='gpt-4o')
+        self.quids = scene_ids
         with open(file1) as f:
+
             self.questions_data = [
-                {k: v for k, v in row.items()}
-                for row in csv.DictReader(f, skipinitialspace=True)
+                {"qid": idx, **{k: v for k, v in row.items()}}
+                for idx, row in enumerate(csv.DictReader(f, skipinitialspace=True)) if idx in scene_ids
             ]
         with open(file2) as f:
             self.init_pose_data = {}
@@ -1030,8 +1129,11 @@ class EQABench(DynamicBench):
 
     def setup_run(self, history=7, mask_thinking=True, add_timesteps_prompt=True, draw_arrows=True,
             points=None, consistency=1, max_steps_per_goal=5, uniform=False, use_map=True):
+            self.interesting_images = {'A': [], 'B': [], 'C': [], 'D': []}
             self.q_index += 1
-            question_data = self.questions_data[self.q_index]
+            # self.q_index = self.q_index % len(self.questions_data)
+            question_data = self.questions_data[self.q_index % len(self.questions_data)]
+            self.quid = question_data["qid"]
             scene = question_data["scene"]
             floor = question_data["floor"]
             scene_floor = scene + "_" + floor
@@ -1056,11 +1158,13 @@ class EQABench(DynamicBench):
             size = np.sum((scene_upper_bnds_normal[:2] - scene_lower_bnds_normal[:2]) ** 2)
             num_step = int(math.sqrt(size) * 3)
             self.curr_run_steps = num_step
+            print("\nQUESTION:", question_data["question"])
             print(f'BUDGET STEPS FOR THIS RUN: {num_step}')
 
             self.run_metadata = {
             'max_steps': num_step,
             'q_index': self.q_index,
+            'quid': self.quid,
             'history': history,
             'points': tuple(points) if points else 0,
             'arrows': draw_arrows,
@@ -1073,7 +1177,8 @@ class EQABench(DynamicBench):
             'scene_id': self.annotatedSimulator.scene_id,
             'init_pos': self.init_pos,
             'uniform': uniform,
-            'use_map': use_map
+            'use_map': use_map,
+            'question_type': question_data["label"]
             }  
 
             self.annotatedSimulator.priv_actions = False
@@ -1083,7 +1188,7 @@ class EQABench(DynamicBench):
             
             self.set_state(init_pts, rotation)
 
-            self.curr_run_name = f'{self.q_index}_{self.annotatedSimulator.scene_id}'
+            self.curr_run_name = f'{self.q_index}_{self.quid}_{self.annotatedSimulator.scene_id}'
             obs = self.annotatedSimulator.step([('forward', 0)])
             return obs
 
@@ -1093,7 +1198,7 @@ class EQABench(DynamicBench):
             print("MAX STEPS REACHED")
             return None
         agent_state = self.get_agent_state()
-        question_data = self.questions_data[self.q_index]
+        question_data = self.questions_data[self.q_index % len(self.questions_data)]
 
         question = question_data["question"]
         choices = [c.split("'")[1] for c in question_data["choices"].split("',")]
@@ -1105,37 +1210,42 @@ class EQABench(DynamicBench):
             vlm_question += "\n" + token + "." + " " + choice
         multi = len(self.run_metadata['sensors']) > 1
 
+        self.vlm_question = vlm_question
 
         raw_images = [obs[f'color_sensor_{i}']['image'].copy() for i in self.annotatedSimulator.sensors]
 
         
         def answer_thread():
             es = ["A", "B", "C", "D", "E"]
-            extra = "\n" + es[len(choices)] + "." + " " + "I do not know"
-
-            answer_prompt = (f"Your task is to answer the following question based on the images you see [QUESTION]: {vlm_question+extra}\nFirst, describe to me in detail the layout of the room you see in each of your observations. Are there any notable objects that are relevant to the question? Then, choose the answer that is most likeley, and return it as a JSON like {{'answer': <answer letter>}}")
-            r, p = self.answerVLM.call(raw_images, answer_prompt, logprobs=5)
-            print('GPT ANSWRED:', r)
-            if type(self.answerVLM) == GeminiModel:
+            extra = "\n" + es[len(choices)] + "." + " " + "I need the agent to move to a different location to answer this question"
+            pred = 'E'
+            answer_prompt = (f"The agent has sent you an image, and is asking you the following question: [QUESTION]: {vlm_question+extra}\nFirst, describe what you see in the image, and it there any notable objects that are relevant to the question. Pay attention to the details in the question. Then, explain what the best answer choice is and why. Lastly, return it as a JSON like {{'answer': <answer letter>}}")
+            res = None
+            for image in raw_images:
+                r, p = self.answerVLM.call([image], answer_prompt, logprobs=5)
                 dct = self.parse_response(r)
-                if dct['answer'] in ['A', 'B', 'C', 'D']:
+                if 'answer' in dct and dct['answer'] in ['A', 'B', 'C', 'D']:
+                    print('ANSWRE MODEL:', r)
+                    self.interesting_images[dct['answer']].append(image)
                     self.answer_counter[dct['answer']] += 1.01
                     pred = dct['answer']
-                else:
-                    pred = 'E'
-                answer_mdata = {'ANSWER PROMPT': answer_prompt, 'ANSWER RESPONSE': r}
-            else:
-                for i in p['logprobs']:
-                    prob = np.exp(i['logprob'])
-                    choice = i['token']
-                    if choice in ['A', 'B', 'C', 'D'] and prob > 0.2:
-                        self.answer_counter[choice] += prob
-                max_token = max(p['logprobs'], key=lambda x: x['logprob'])['token']
-                if max_token in ['A', 'B', 'C', 'D']:
-                    pred = max_token
-                else:
-                    pred = max_token
-                answer_mdata = {'ANSWER PROMPT': answer_prompt, 'ANSWER RESPONSE': max_token, 'ANSWER LOGPROBS': p['logprobs']}
+                    res = r
+            if res is None:
+                res = r
+            answer_mdata = {'ANSWER PROMPT': answer_prompt, 'ANSWER RESPONSE': res}
+            # if type(self.answerVLM) == GeminiModel:
+            # else:
+            #     for i in p['logprobs']:
+            #         prob = np.exp(i['logprob'])
+            #         choice = i['token']
+            #         if choice in ['A', 'B', 'C', 'D'] and prob > 0.2:
+            #             self.answer_counter[choice] += prob
+            #     max_token = max(p['logprobs'], key=lambda x: x['logprob'])['token']
+            #     if max_token in ['A', 'B', 'C', 'D']:
+            #         pred = max_token
+            #     else:
+            #         pred = max_token
+            #     answer_mdata = {'ANSWER PROMPT': answer_prompt, 'ANSWER RESPONSE': max_token, 'ANSWER LOGPROBS': p['logprobs']}
 
             return pred, answer_mdata
 
@@ -1166,25 +1276,11 @@ class EQABench(DynamicBench):
                 f"There are {len(real_actions)} red arrows superimposed onto your observation{'s' if multi else''}, which represent potential actions. " 
                 f"These are labeled with a number in a white circle, which represent the location you would move to if you took that action. {'Note that action 0 turns you around completely .' if self.step - self.turned >= 3 else ''}"
                 "First, tell me what you see from your each of your current sensor observations, and if there are any notable objects that are relevant to the question. "
-                "Second, tell me a room or location you should navigate to in order to answer the question, and which direction you should go to reach that. "
-                "Lastly, return an action in the format {'action': <action_number>}. Dont answer the question, just return an action"
+                "Second, tell me a room or location you should navigate to in order to answer the question. "
+                "Lastly, choose the an action that will get you to that room or location, and return it in the format {'action': <action_number>}. Dont answer the question, just return an action"
                 
                 # "Note you CANNOT GO THROUGH CLOSED DOORS."
             )
-            # if len(real_actions) == 0:
-            #     prompt_question = (
-            #     "Your task is to navigate throughout the environment and learn the answer to the following quesiton\n"
-            #         f"[QUESTION]: {vlm_question}\n"
-            #         f"You have the following actions.\n"
-            #         "{\n"
-            #         "0: turn completely around to get fresh observations.\n"
-            #         "-1: DONE, you know the answer to the question!\n"
-            #         "}\n"
-            #         "First, tell me what you see from your current sensor observations. "
-            #         "Second, tell me what room or location you should navigate to in order to answer the question, and which direction you should go to reach that. "
-            #         "Lastly, return an action in the format {'action': <action_number>}. Dont answer the question, just return an action"
-            #         # "Note you CANNOT GO THROUGH CLOSED DOORS."
-            #     )
 
             if self.run_metadata['use_map']:
                 prompt_question = (
@@ -1195,7 +1291,7 @@ class EQABench(DynamicBench):
     
                 "\nYou have a topdown map of the environment, with navigable area shown in LIGHT GREY and obstacles shown in BLACK. This map shows you where you have been in the past, shown in GREEN. Your current location is shown by a RED dot. "
                 "The same actions you see superimposed on the RGB image are also shown on the top-down map. These actions also represented by red arrows and white circles, and show the location you would move to if you took that action. "
-                "Use this map to help you explore new areas. "
+                "Use this map to help you explore new areas (light grey). "
                 
                 "First, tell me what you see from your current sensor observations. "
                 "Second, tell me what room or location you should navigate to in order to answer the question, and which direction you should go to reach that. "
@@ -1220,7 +1316,9 @@ class EQABench(DynamicBench):
 
         images = self.get_sensor_images(obs) + [zoomed_map]
         print(f'action {row["actions"]}, pred {row["answer"]}, ground {answer}')
-
+        if row["actions"] <= len(list(real_actions.keys())) and row["actions"] > 0:
+            mag, theta = list(real_actions.keys())[row["actions"]-1]
+            self.update_topdown(mag, theta, agent_state, mag)
         metadata['PREDICTION'] = row['answer']
         metadata['GROUND TRUTH'] = answer
 
@@ -1257,10 +1355,31 @@ class EQABench(DynamicBench):
         
         # Get the keys and values of the top two entries
         print('answers counter', sorted_counter)
-        if(sorted_counter[0][1] > 2 and sorted_counter[0][1]/(sorted_counter[1][1]+0.001) > 2.5 and self.step > 8) or (sorted_counter[0][1] > 4):
+        if(sorted_counter[0][1] > 3 and sorted_counter[0][1]/(sorted_counter[1][1]+0.001) > 2.5 and self.step > 7) or (sorted_counter[0][1] > 5 and self.step > 7):
             print("STOPPING EARLY, DONE")
             return None
 
-
+        self.answerVLM.get_spend()
+        self.vlm.get_spend()
         return self.annotatedSimulator.move_choices(row['actions'], points=list(real_actions.keys()))        
-        # return actionsbnn
+
+    def post_run(self):
+        self.final_answer()
+        return super().post_run()
+
+    def final_answer(self):
+
+        self.run_metadata['final_answer'] = random.choice(['A', 'B', 'C', 'D'])
+        images = []
+        for k, v in self.interesting_images.items():
+            if len(v) > 1:
+                images += random.choices(v, k=2)
+            elif len(v) == 1:
+                images.append(random.choice(v))
+        answer_prompt = (f"Your task is to analyze {len(images)} images from the same environment, and then answer a question about the environment [QUESTION]: {self.vlm_question}\n First, tell me what you see in each image, and if there any notable objects that are relevant to the question. Then, do your best to answer the quesiton, even if you are unsure, and return it as a JSON like {{'answer': <answer letter>}}")
+        if len(images) > 0:
+            r, p = self.answerVLM.call(images, answer_prompt)
+            print('FINAL ANSWER MODEL:', r)
+            dct = self.parse_response(r)
+            if 'answer' in dct and dct['answer'] in ['A', 'B', 'C', 'D']:
+                self.run_metadata['final_answer'] = dct['answer']

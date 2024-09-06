@@ -188,7 +188,14 @@ class GeminiModel(VLM):
         "max_output_tokens": 500,
         "response_mime_type": "text/plain",
         }
-
+        self.spend = 0
+        if self.name == 'gemini-1.5-flash':
+            self.inp_cost = 0.075/1000000
+            self.out_cost = 0.3/1000000
+        else:
+            self.inp_cost = 3.5/1000000
+            self.out_cost = 10.5/1000000
+        
         self.model = genai.GenerativeModel(
         model_name = model,
         generation_config=self.generation_config,
@@ -221,6 +228,8 @@ class GeminiModel(VLM):
             t = time.time()
             response = self.session.send_message([text_prompt] + uploaded)
             finish = time.time() - t
+            self.spend += response.usage_metadata.prompt_token_count*self.inp_cost + response.usage_metadata.candidates_token_count*self.out_cost
+
             rng_state = random.setstate(rng_state)
 
             if history == 0:
@@ -262,6 +271,7 @@ class GeminiModel(VLM):
             t = time.time()
             response = self.model.generate_content([text_prompt] + ims)
             finish = time.time() - t
+            self.spend += response.usage_metadata.prompt_token_count*self.inp_cost + response.usage_metadata.candidates_token_count*self.out_cost
             perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
             print(f'{self.name} finished inference, took {finish} seconds, speed of {perf["tokens_generated"]/finish} t/s')
             resp = response.text
@@ -271,6 +281,9 @@ class GeminiModel(VLM):
             perf = {'tokens_generated': 0, 'duration': 1, 'input_tokens': 0}
         return resp, perf
     
+    def get_spend(self):
+        print(f"Total spend for {self.name}: {np.round(self.spend, 2)}\n")
+        return self.spend
 import clip
 
 
