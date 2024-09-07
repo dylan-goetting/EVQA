@@ -1,21 +1,16 @@
-from ast import arg
-import cProfile
-from pdb import run
 from dotenv import load_dotenv
 import os
 import random
-
+import datetime
 load_dotenv() 
-import json
 from matplotlib.pyplot import arrow
-import yaml
 import argparse
 import os
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 from src.vlm import *
 from src.dynamicBench import *
-from src.multiAgent import *
+from src.benchmarks import *
 
 if __name__ == '__main__':
 
@@ -25,14 +20,18 @@ if __name__ == '__main__':
     parser.add_argument('-sid', '--scene_ids', type=int, nargs='+', help='scene ids to run', default=[])
     parser.add_argument('-t', '--task', type=str, help='task to run', default='obj_nav')
     parser.add_argument('-sp', '--split', type=str, help='train or val', default='val')
-    parser.add_argument('-his', '--history', type=int, help='context_history', default=10)
+    parser.add_argument('-his', '--history', type=int, help='context_history', default=0)
     parser.add_argument('-il', '--inner_loop', type=int, help='inner loop', default=30)
     parser.add_argument('-c', '--consistency', type=int, help='inner loop', default=1)
     parser.add_argument('-msg', '--max_steps_per_goal', type=int, help='maximum steps per goal', default=10)
     parser.add_argument('-mu', '--multi', action='store_true', help='verbose')
     parser.add_argument('-u', '--uniform', action='store_true', help='uniform')
-    parser.add_argument('-um', '--use_map', action='store_true', help='use map')
+    parser.add_argument('-um', '--use_map', type=int, help='use map', default=0)
     parser.add_argument('-p', '--pro', action='store_true', help='pro')
+    parser.add_argument('-e', '--explore_factor', type=float, help='use map', default=0)
+    parser.add_argument('-st', '--success_thresh', type=float, default=2)
+    parser.add_argument('-pm', '--priv_map',  action='store_true')
+
 
 
     args = parser.parse_args()
@@ -40,7 +39,7 @@ if __name__ == '__main__':
         args.seed = random.randint(0, 10000)
     random.seed(args.seed)
     np.random.seed(args.seed)
-    outer_run_name = datetime.datetime.now().strftime("%m%d%s") + "_seed" + str(args.seed)
+    outer_run_name = datetime.datetime.now().strftime("%m%d%s") + "_seed" + str(args.seed) + f'_map{args.use_map}'
     
 
     arrow_width = 0.75
@@ -50,7 +49,6 @@ if __name__ == '__main__':
     points = p7 if args.multi else p1
     sens = [2*arrow_width, 0, -2*arrow_width] if args.multi else [0]
     fov = 125 if args.multi else 140
-    args.history = 0 if args.multi else args.history
     sim_kwargs = { 'sensors':sens, 'resolution': (1080, 1920), 'headless': True, 'fov': fov, 'random_seed': args.seed}
     
     if len(sim_kwargs['sensors']) > 1:
@@ -75,7 +73,9 @@ if __name__ == '__main__':
         'log_freq': 1,
         'uniform': True if args.uniform else False,
         'points': points,
-        'use_map': True if args.use_map else False
+        'use_map': args.use_map,
+        'explore_factor': args.explore_factor,
+        'map_type': 'priv' if args.priv_map else 'unpriv',
     }
     exp_kwargs={'split': args.split, 'scene_ids': args.scene_ids}
 
@@ -89,11 +89,12 @@ if __name__ == '__main__':
         bench_cls = GOATBench
         exp_kwargs = {'split': 'train', 'num_scenes': 20}
         run_kwargs['max_steps_per_goal'] = args.max_steps_per_goal
+        run_kwargs['success_thresh'] = args.success_thresh
     if args.task == 'eqa':
         bench_cls = EQABench
         hard_qs = [451, 403, 337, 182, 209, 97, 481]
-        # hard_qs = None
-        hard_qs += [360, 150, 201, 119, 210, 466, 246, 66]
+        hard_qs = None
+        # hard_qs += [360, 150, 201, 119, 210, 466, 246, 66]
 
         exp_kwargs['scene_ids'] = hard_qs
 

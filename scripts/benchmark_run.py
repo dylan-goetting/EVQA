@@ -2,7 +2,7 @@ import yaml
 import argparse
 import sys
 sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
-from src.benchmark import *
+from spatialBench import *
 from vlm import *
 
 DEFAULT_CONFIG = {

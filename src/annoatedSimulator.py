@@ -1,13 +1,6 @@
-import dis
-from hmac import new
-from math import e
 import pdb
 from collections import Counter
 import pickle
-import random
-import re
-from sqlite3 import DatabaseError
-import sys
 from habitat_sim.utils.common import quat_from_angle_axis, quat_to_angle_axis
 import habitat_sim
 import cv2
