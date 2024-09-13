@@ -203,27 +203,15 @@ class GeminiModel(VLM):
         )
         self.session = self.model.start_chat(history=[])
 
-    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None):
+    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None, ex_type = Exception):
         
   
         try:
             uploaded = []
             for image in images:
                 im = Image.fromarray(image[:, :, 0:3], mode='RGB')
-                # im.save('logs/temp.png', overwrite=True)
-                retries = 3  # Number of retry attempts
-                for attempt in range(retries):
-                    try:
-                        # Attempt to upload the file
-                        uploaded.append(im)
-                        #uploaded.append(genai.upload_file('logs/temp.png'))
-                        break  # Break the retry loop if successful
-                    except (socket.timeout, httplib2.ServerNotFoundError, HttpError, BrokenPipeError, OSError) as e:
-                        print(f"Error uploading file (Attempt {attempt + 1}/{retries}): {e}")
-                        if attempt < retries - 1:
-                            time.sleep(2 ** attempt) 
-                        else:
-                            raise
+                uploaded.append(im)
+
             rng_state = random.getstate()
             t = time.time()
             response = self.session.send_message([text_prompt] + uploaded)
@@ -273,7 +261,7 @@ class GeminiModel(VLM):
             finish = time.time() - t
             self.spend += response.usage_metadata.prompt_token_count*self.inp_cost + response.usage_metadata.candidates_token_count*self.out_cost
             perf = {'tokens_generated': response.usage_metadata.candidates_token_count, 'duration': finish, 'input_tokens': response.usage_metadata.prompt_token_count}
-            print(f'{self.name} finished inference, took {finish} seconds, speed of {perf["tokens_generated"]/finish} t/s')
+            print(f'{self.name} finished inference, took {np.round(finish, 2)} seconds, speed of {np.round(perf["tokens_generated"]/finish, 2)} t/s')
             resp = response.text
         except Exception as e:  
             resp = f"GEMINI API ERROR: {e}"
@@ -284,13 +272,8 @@ class GeminiModel(VLM):
     def get_spend(self):
         print(f"Total spend for {self.name}: {np.round(self.spend, 2)}\n")
         return self.spend
+    
 import clip
-
-
-# Load the CLIP model and the preprocessing method
-
-
-
 class CLIPModel(VLM):
 
     def __init__(self, model="ViT-B/32"):
@@ -407,7 +390,7 @@ class GPTModel(VLM) :
             print(e)
             return "ERROR", {"tokens_generated": 0, "duration": 1, "input_tokens": 0}
     
-    def call(self, images, text_prompt: str, logprobs):
+    def call(self, images, text_prompt: str, logprobs=0):
         return self.call_chat(0, images, text_prompt, logprobs=logprobs)
 
     def rewind(self):

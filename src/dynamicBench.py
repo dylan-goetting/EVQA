@@ -1,4 +1,6 @@
 import os
+import random
+from re import I
 from sqlite3 import DatabaseError
 import pdb
 from habitat.utils.visualizations import maps
@@ -7,24 +9,29 @@ import cv2
 import ast
 import pandas as pd
 from PIL import Image
+from torch import Value, clip_
 from src.utils import *
 from src.vlm import VLM, GPTModel, GeminiModel
 import habitat_sim
 import cv2
+from src.pivot import PIVOT
 
 
 class DynamicBench: 
 
     task = 'Not defined'
 
-    def __init__(self, sim_kwargs, vlm_agent: VLM, exp_kwargs, outer_run_name):
+    def __init__(self, sim_kwargs, vlm_agent: VLM, exp_kwargs, outer_run_name, catch=False, clip_mag=2):
 
         self.sim_kwargs = sim_kwargs
         self.vlm = vlm_agent
+        self.clip_mag = clip_mag
         # self.map_vlm = GeminiModel('gemini-1.5-pro', 'You are an assistant that specializes in maps. You analyze the map and provide action for the agent to take')
         self.map_vlm = GPTModel('gpt-4o', sys_instruction='You are a 5 time world champion cartographer. You analyze the map you are given and provide action for the agent to take')
-        self.answerVLM = GeminiModel(sys_instruction='You are a world champion question answerer. An agent sends you images and queries, and you intelligently respond with the correct answer ', 
-                                  model='gemini-1.5-flash')
+        self.answerVLM = GeminiModel(sys_instruction='You are a 5 time world champion question answerer. An agent sends you images and questions, and you intelligently respond with the correct answer ', 
+                                  model=self.vlm.name)
+        self.finalAnswerVlm = GPTModel(sys_instruction='You are a 5 time world champion question answerer. An agent sends you images and questions, and you intelligently respond with the correct answer ', 
+                                  model='gpt-4o')
         # self.answerVLM = GPTModel(sys_instruction='You are a helpful assistant that answers questions about the observations you see', 
         #                           model='gpt-4o')
         self.init_pos = None
@@ -37,6 +44,9 @@ class DynamicBench:
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.annotatedSimulator = None
+        self.exception_type = DatabaseError
+        if catch:
+            self.exception_type = Exception
         self.setup_experiment(**self.exp_kwargs)
 
 
@@ -47,7 +57,7 @@ class DynamicBench:
         for i in range(outer_loop):
             try:
                 self.run_trajectory(inner_loop, log_freq, **run_kwargs)
-            except DatabaseError as e:
+            except self.exception_type as e:
                 print(e)
                 print(f'Moving on to iter {i+1}')
                 try:
@@ -61,11 +71,17 @@ class DynamicBench:
         self.df = pd.DataFrame({})
         self.log_freq = log_freq
         obs = self.setup_run(**run_kwargs)
+        self.pivot = None
+        if run_kwargs['pivot']:
+            assert len(self.annotatedSimulator.sensors) == 1
+            self.pivot = PIVOT(self.vlm, self.annotatedSimulator.fov, self.annotatedSimulator.RESOLUTION)
         self.turned = -3
-
+        self.called_done = -2
+        self.distance_traveled = 0
+        self.inner_loop = inner_loop
         topdown_map = maps.get_topdown_map_from_sim(self.annotatedSimulator.sim, map_resolution=2048)
-        self.explored_color = (0, 255, 0)
-        self.unexplored_color = (200, 200, 200)
+        self.explored_color = (200, 200, 200)
+        self.unexplored_color = (0, 255, 0)
         recolor_map = np.array(
         [[40, 40, 40], self.unexplored_color, [0, 0, 0]], dtype=np.uint8)
         topdown_map = recolor_map[topdown_map]
@@ -85,12 +101,13 @@ class DynamicBench:
 
         self.topdown_map = topdown_map
 
-        self.unpriv_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
-        self.explored_map = np.zeros((3000, 3000, 3), dtype=np.uint8)
+        self.unpriv_map = np.zeros((5000, 5000, 3), dtype=np.uint8)
+        self.explored_map = np.zeros((5000, 5000, 3), dtype=np.uint8)
         self.scale = 100
 
         print(f'\n===================STARTING RUN: {self.curr_run_name} ===================\n')
         for _ in range(inner_loop):
+            rng_state = random.getstate()
             try:
                 print('STEP ', self.step)
                 actions = self.step_env(obs)
@@ -98,10 +115,11 @@ class DynamicBench:
                     break
                 obs = self.annotatedSimulator.step(actions)
                 self.step += 1
-            except DatabaseError as e:
+            except self.exception_type as e:
                 print(e)
-                print('ERROR OCCURRED')
-                
+                print('\n\n\n\n\nERROR OCCURRED')
+            finally:
+                random.setstate(rng_state)
         self.post_run()
     
     def setup_run(self, **run_kwargs):
@@ -111,21 +129,22 @@ class DynamicBench:
         raise NotImplementedError
 
     def post_run_log(self, items=None):
-        s = self.df['agent_location']
-        pairs = list(zip(s[:-1], s[1:]))
+        if 'agent_location' in self.df:
+            s = self.df['agent_location']
+            pairs = list(zip(s[:-1], s[1:]))
 
-        unpriv_map = self.unpriv_map.copy()
-        mask = np.all(self.explored_map == self.explored_color, axis=-1)
-        unpriv_map[mask] = self.explored_color
+            unpriv_map = self.unpriv_map.copy()
+            mask = np.all(self.explored_map == self.explored_color, axis=-1)
+            unpriv_map[mask] = self.explored_color
 
-        for loc1, loc2 in pairs:
-            c1 = self.toGrid(loc1)
-            c2 = self.toGrid(loc2)
-            cv2.arrowedLine(self.topdown_map, c1, c2, (0, 150, 0), 10)
+            for loc1, loc2 in pairs:
+                c1 = self.toGrid(loc1)
+                c2 = self.toGrid(loc2)
+                cv2.arrowedLine(self.topdown_map, c1, c2, (0, 150, 0), 10)
 
-            c1 = self.toGrid2(loc1)
-            c2 = self.toGrid2(loc2)
-            cv2.arrowedLine(unpriv_map, c1, c2, (0, 150, 0), 10)
+                c1 = self.toGrid2(loc1)
+                c2 = self.toGrid2(loc2)
+                cv2.arrowedLine(unpriv_map, c1, c2, (0, 150, 0), 10)
 
         path = f'logs/{self.outer_run_name}/{self.curr_run_name}/step_FINAL'
         os.makedirs(path, exist_ok=True)
@@ -152,7 +171,8 @@ class DynamicBench:
         self.annotatedSimulator.sim.close()
         self.get_costs()
         print('\n===================RUN COMPLETE===================\n')
-        gif(f'logs/{self.outer_run_name}/{self.curr_run_name}')
+
+        gif(f'logs/{self.outer_run_name}/{self.curr_run_name}', multi=len(self.annotatedSimulator.sensors) > 1)
         print('saved gif')
 
     def log(self, images, response, success, metadata, copy_images=[]):
@@ -203,7 +223,7 @@ class DynamicBench:
         while True:
             num_calls += 1
             
-            resp, performance = self.vlm.call_chat(self.run_metadata['history'], images, prompt, add_timesteps_prompt=self.run_metadata['add_timesteps_prompt'], step=self.step)
+            resp, performance = self.vlm.call_chat(self.run_metadata['history'], images, prompt, add_timesteps_prompt=True, step=self.step, ex_type = self.exception_type)
             self.total_input_tokens += performance['input_tokens']
             self.total_output_tokens += performance['tokens_generated']
 
@@ -218,7 +238,7 @@ class DynamicBench:
                     else:
                         self.turned = self.step
 
-            except (IndexError, KeyError, TypeError) as e:
+            except (IndexError, KeyError, TypeError, ValueError) as e:
                 print(e)
                 row['success'] = 0
             finally:
@@ -238,7 +258,11 @@ class DynamicBench:
                 if row['success']==1:
                     self.vlm.rewind()
         row['num_calls'] = num_calls
-
+        rgb = self.topdown_map
+        green = np.sum(rgb == self.explored_color)
+        light_grey = np.sum(rgb == self.unexplored_color)
+        row['explored'] = green / (green + light_grey)
+        row['distance_traveled'] = self.distance_traveled
         return row, metadata, resp
 
     def get_sensor_images(self, obs, convert=False):
@@ -265,11 +289,10 @@ class DynamicBench:
 
     def get_arrow_options(self, depth_image, agent_state, sensor_state, rnge=1.5, im=None):
         
-        if self.run_metadata['uniform']:
-            return self.run_metadata['points']
+
         height_map = depth_to_height1(depth_image, self.annotatedSimulator.fov, sensor_state.position, 
                                       sensor_state.rotation, )
-        height_map = abs(height_map - (agent_state.position[1]-0.1)) < 0.15
+        height_map = abs(height_map - (agent_state.position[1]-0.05)) < 0.25
 #         depth_image_normalized = (depth_image - np.min(depth_image)) / (np.max(depth_image) - np.min(depth_image)) * 255
 
 # # Convert the normalized depth image to 8-bit unsigned integer
@@ -281,7 +304,7 @@ class DynamicBench:
 #         Image.fromarray(depth_image_8bit).save('logs/depth_image.png')
 #         pdb.set_trace()
         arrowData = []
-        num_pts = 30 if self.task == 'obj_nav' else 50
+        num_pts = 60
         points = [(1, val) for val in np.linspace(-rnge, rnge, num_pts)]
         start = self.agent_frame_to_image_coords([0, 0, 0], agent_state, sensor_state, resolution = depth_image.shape)
         arrowData = []
@@ -289,7 +312,7 @@ class DynamicBench:
             
             arrow = self.get_end_pxl(start, theta, height_map, agent_state, sensor_state, depth_image)
             if arrow is not None:
-                arrowData.append(arrow) 
+                arrowData.append(arrow)
         return arrowData
     
 
@@ -335,16 +358,22 @@ class DynamicBench:
         local_coords = global_to_local(agent_state.position, agent_state.rotation, 
                                        local_to_global(sensor_state.position, sensor_state.rotation, camera_coords))   
         mag = np.linalg.norm([local_coords[0], local_coords[2]])
-        self.update_topdown(mag, theta, agent_state)
-        self.update_unpriv(mag, theta, agent_state)
         # print('found a point:', mag, theta, i)
         return (mag, theta)
         
     def annotate_image(self, agent_state, obs):
+        if self.step > 0:
+            dist_traveled = np.linalg.norm(agent_state.position - self.df['agent_location'].iloc[-1])
+            self.distance_traveled += dist_traveled
         points = []
-        rnge = 1.5 if len(self.annotatedSimulator.sensors) == 1 else 2.2
-        spacing = 0.4
-
+        rnge = 1.8 if len(self.annotatedSimulator.sensors) == 1 else 2.2
+        spacing = 0.54 if len(self.annotatedSimulator.sensors) == 1 else 0.44
+        # c2 = self.toGrid(agent_state.position)
+        # if len(self.df) > 0:
+            # c1 = self.toGrid(self.df['agent_location'].iloc[-1])
+            # cv2.arrowedLine(self.topdown_map, c1, c2, (0, 100, 0), 10)
+        # else:
+        # cv2.circle(self.topdown_map, c2, radius=20, color=(0, 100, 0), thickness=-1)
         for sensor in self.annotatedSimulator.sensors:
             if sensor > 0:
                 name = 'left'
@@ -363,9 +392,21 @@ class DynamicBench:
         return real_actions
 
     def select_arrrows(self, aD, min_angle=0.3, agent_state=None):
-        # print(f'There are {len(aD)} actions to choose from')
+        arrow_width = 0.75
 
         explore_factor = self.run_metadata['explore_factor']
+        if self.task == 'GOAT_BENCH':
+            goal = self.curr_episode[self.curr_goal_ndx]
+            if goal['mode'] == 'image':
+                explore_factor *= 1.6
+            if goal['mode'] == 'description':
+                explore_factor *= 1.3
+        if self.task == 'EQA':
+            if self.step < 8:
+                explore_factor *= 1.75
+        clip_frac = 0.66
+        clip_mag = self.clip_mag
+
         explore = explore_factor > 0
         unique = {}
         for mag, theta in aD:
@@ -375,24 +416,30 @@ class DynamicBench:
                 unique[theta] = [mag]
         arrowData = []
         for theta, mags in unique.items():
-            mag = 0.66*min(mags)
+            mag = min(mags)
+            self.update_unpriv(mag, theta, agent_state, clip=clip_mag, clip_frac=0.8)
+            self.update_topdown(mag, theta, agent_state, clip=3, clip_frac=0.8)
 
-            cart = [mag*np.sin(theta), 0, -mag*np.cos(theta)]
+        if self.step - self.called_done < 2:
+            return [(1.3, -2*arrow_width), (1.3, -arrow_width), (1.3, 0), (1.3, arrow_width),  (1.3, 2*arrow_width)]
+            # explore_factor = 0
+            # clip_mag = 1
+        topdown_map = self.unpriv_map.copy()
+        mask = np.all(self.explored_map == self.explored_color, axis=-1)
+        topdown_map[mask] = self.explored_color
+        for theta, mags in unique.items():
+            mag = min(mags)
+            cart = [0.8*mag*np.sin(theta), 0, -0.8*mag*np.cos(theta)]
             global_coords = local_to_global(agent_state.position, agent_state.rotation, cart)
-            grid_coords = self.toGrid(global_coords)
-            score = (sum(np.all(self.topdown_map[grid_coords[1]-2:grid_coords[1]+2, grid_coords[0]] == self.explored_color, axis=-1)) + 
-                    sum(np.all(self.topdown_map[grid_coords[1], grid_coords[0]-2:grid_coords[0]+2] == self.explored_color, axis=-1)))
-            arrowData.append([mag, theta, score<5])
-
-        # print(f'There are now {len(arrowData)} actions to choose from')
+            grid_coords = self.toGrid2(global_coords)
+            score = (sum(np.all((topdown_map[grid_coords[1]-2:grid_coords[1]+2, grid_coords[0]] == self.explored_color), axis=-1)) + 
+                    sum(np.all(topdown_map[grid_coords[1], grid_coords[0]-2:grid_coords[0]+2] == self.explored_color, axis=-1)))
+            arrowData.append([clip_frac*mag, theta, score<3])
 
         arrowData.sort(key=lambda x: x[1])
         thetas = set()
         out = []
-        # print([a[0] for a in arrowData])
-        filtered = list(filter(lambda x: x[0] > 0.65, arrowData))
-
-        # print(f'There are now {len(filtered)} actions to choose from')
+        filtered = arrowData # list(filter(lambda x: x[0] > 0.65, arrowData))
 
         filtered.sort(key=lambda x: x[1])
         if filtered == []:
@@ -405,47 +452,49 @@ class DynamicBench:
                 smallest_theta = longest[1]
                 longest_ndx = f.index(longest)
             
-                out.append([min(longest[0], 3), longest[1], longest[2]])
+                out.append([min(longest[0], clip_mag), longest[1], longest[2]])
                 thetas.add(longest[1])
-                
                 for i in range(longest_ndx+1, len(f)):
-                    if f[i][1] - longest_theta > min_angle:
+                    if f[i][1] - longest_theta > (min_angle*0.9):
                         # out.append(f[i])
-                        out.append([min(f[i][0], 3), f[i][1], f[i][2]])
+                        out.append([min(f[i][0], clip_mag), f[i][1], f[i][2]])
                         thetas.add(f[i][1])
                         longest_theta = f[i][1]
                 for i in range(longest_ndx-1, -1, -1):
-                    if smallest_theta - f[i][1] > min_angle:
+                    if smallest_theta - f[i][1] > (min_angle*0.9):
                         
-                        out.append([min(f[i][0], 3), f[i][1], f[i][2]])
+                        out.append([min(f[i][0], clip_mag), f[i][1], f[i][2]])
                         thetas.add(f[i][1])
                         smallest_theta = f[i][1]
 
-                # print(f'Found {len(out)} actions that explore')
+                print(f'Found {len(out)} actions that explore')
                 for mag, theta, isGood in filtered:
                     if theta not in thetas and min([abs(theta - t) for t in thetas]) > min_angle*explore_factor:
-                        out.append((min(mag, 3), theta, isGood))
+                        out.append((min(mag, clip_mag), theta, isGood))
                         thetas.add(theta)
-                # print(f'Ended up with {len(out)} actions in total')
 
         if len(out) == 0:
             longest = max(filtered, key=lambda x: x[0])
             longest_theta = longest[1]
             smallest_theta = longest[1]
             longest_ndx = filtered.index(longest)
-            out.append([min(longest[0], 3), longest[1], longest[2]])
+            out.append([min(longest[0], clip_mag), longest[1], longest[2]])
             
             for i in range(longest_ndx+1, len(filtered)):
                 if filtered[i][1] - longest_theta > min_angle:
-                    out.append([min(filtered[i][0], 3), filtered[i][1], filtered[i][2]])
-                    # out.append(filtered[i])
+                    out.append([min(filtered[i][0], clip_mag), filtered[i][1], filtered[i][2]])
                     longest_theta = filtered[i][1]
             for i in range(longest_ndx-1, -1, -1):
                 if smallest_theta - filtered[i][1] > min_angle:
-                    out.append([min(filtered[i][0], 3), filtered[i][1], filtered[i][2]])
-                    # out.append(filtered[i])
+                    out.append([min(filtered[i][0], clip_mag), filtered[i][1], filtered[i][2]])
                     smallest_theta = filtered[i][1]
 
+        if self.run_metadata['uniform']:
+            return self.run_metadata['points']
+        if (out == [] or max(out, key=lambda x: x[0])[0] < 0.5) and (self.step - self.turned) < 3:
+            print('DEFAULTING ARROW ACTIONS')
+            return [(1.4, -2*arrow_width), (1.4, -arrow_width), (1.4, 0), (1.4, arrow_width),  (1.4, 2*arrow_width)]
+        print(f'Found {len(out)} total actions')
         out.sort(key=lambda x: x[1])
         return [(mag, theta) for mag, theta, _ in out]
     
@@ -466,7 +515,8 @@ class DynamicBench:
             end_px = self.agent_frame_to_image_coords(cart, agent_state, sensor_state)
             if end_px is None:
                 continue
-            if 0.05 * rgb_image.shape[1] <= end_px[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_px[1] <= 0.95 * rgb_image.shape[0]:
+            bottom_thresh = 0.06
+            if bottom_thresh * rgb_image.shape[1] <= end_px[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_px[1] <= 0.95 * rgb_image.shape[0]:
                 if (mag, theta) in real_actions:
                     action_name = real_actions[(mag, theta)]
                 else:
@@ -486,6 +536,9 @@ class DynamicBench:
                 cv2.circle(rgb_image, circle_center, circle_radius, (255, 0, 0), 2)
                 text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
                 cv2.putText(rgb_image, text, text_position, font, text_size, text_color, text_thickness)
+            else:
+                pass
+                # print('didnt draw point')
 
         if (self.step - self.turned) >= 3 or self.step == self.turned:
             text = '0'
@@ -544,11 +597,14 @@ class DynamicBench:
             return intersections
         return None
 
+    def dist2d(self, p1, p2):
+        return np.linalg.norm(np.array([p1[0], p1[2]]) - np.array([p2[0], p2[2]]))
+
     def update_topdown(self, mag, theta, agent_state, clip=1.75, clip_frac=0.8, goal=None, goal_name=None):
-        if goal is not None:
+        if goal is not None and goal[1] > agent_state.position[1] and goal[1] - agent_state.position[1] < 4:
             goal_coords = self.toGrid(goal)
-            cv2.circle(self.topdown_map, goal_coords, radius=20, color=(255, 155, 0), thickness=-1)
-            cv2.putText(self.topdown_map, goal_name, (goal_coords[0] + 10, goal_coords[1] + 10), cv2.FONT_HERSHEY_SIMPLEX, 2.2, (255, 155, 0), 2)
+            cv2.circle(self.topdown_map, goal_coords, radius=20, color=(255, 255, 255), thickness=-1)
+            cv2.putText(self.topdown_map, goal_name, (goal_coords[0] + 20, goal_coords[1] + 20), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 3)
             return 
         mag = min(clip_frac*mag, clip)
         local_coords = np.array([mag*np.sin(theta), 0, -mag*np.cos(theta)])
@@ -561,7 +617,7 @@ class DynamicBench:
    
     def update_unpriv(self, mag, theta, agent_state, clip=1.75, clip_frac=0.8):
         agent_coords = self.toGrid2(agent_state.position)
-        unclipped = max(mag - 1, 0)
+        unclipped = max(mag - 0.5, 0)
         local_coords = np.array([unclipped*np.sin(theta), 0, -unclipped*np.cos(theta)])
         global_coords = local_to_global(agent_state.position, agent_state.rotation, local_coords)
         point = self.toGrid2(global_coords)
@@ -586,7 +642,7 @@ class DynamicBench:
         y = int(resolution[0]//2 + dz*self.scale)
         return (x, y)
 
-    def generate_unpriv(self, real_actions=None, goal=None, zoom=12):
+    def generate_unpriv(self, real_actions=None, goal=None, zoom=12, chosen_action=None):
         agent_state = self.get_agent_state(0)
         agent_coords = self.toGrid2(agent_state.position)
 
@@ -600,7 +656,33 @@ class DynamicBench:
         topdown_map[mask] = self.explored_color
         text_size = 1.25
         text_thickness = 1
-                
+        x, y = agent_coords
+        # x1, y1 = self.toGrid2(local_to_global(agent_state.position, agent_state.rotation, [0, 0, 2]))
+
+        # angle = np.arctan2(y - y1, x - x1) * 180.0 / np.pi  # Convert from radians to degrees
+
+        # # To rotate the line segment so it's vertical, subtract the angle from 90 degrees
+        # rotation_angle = 90 - angle
+
+        # # Get the image center
+        # (h, w) = topdown_map.shape[:2]
+        # center = (w // 2, h // 2)
+
+        # # Create the rotation matrix
+        # M = cv2.getRotationMatrix2D(center, rotation_angle, 1.0)
+        # cos = np.abs(M[0, 0])
+        # sin = np.abs(M[0, 1])
+
+        # # Compute the new dimensions of the rotated image
+        # new_w = int((h * sin) + (w * cos))
+        # new_h = int((h * cos) + (w * sin))
+
+        # # Adjust the rotation matrix to account for translation
+        # M[0, 2] += (new_w / 2) - x1
+        # M[1, 2] += (new_h / 2) - y1
+        # # Perform the rotation
+        # topdown_map = cv2.warpAffine(topdown_map, M, (new_w, new_h))
+        texts = []
         font = cv2.FONT_HERSHEY_SIMPLEX
         if self.step - self.turned >= 3:
             real_actions[(0.75, np.pi)] = 0
@@ -614,16 +696,27 @@ class DynamicBench:
             (text_width, text_height), _ = cv2.getTextSize(text, font, text_size, text_thickness)
             circle_center = (act_coords[0], act_coords[1])
             circle_radius = max(text_width, text_height) // 2 + 15
-            cv2.circle(topdown_map, circle_center, circle_radius, (255, 255, 255), -1)
+            if chosen_action is not None and action == chosen_action:
+                cv2.circle(topdown_map, circle_center, circle_radius, (0, 255, 0), -1)
+            else:
+                cv2.circle(topdown_map, circle_center, circle_radius, (255, 255, 255), -1)
             text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
+            cv2.circle(topdown_map, circle_center, circle_radius, (255, 0, 0), 1)
+            # texts.append((text, text_position))
             cv2.putText(topdown_map, text, text_position, font, text_size, (0, 0, 0), text_thickness+1)
 
         cv2.circle(topdown_map, agent_coords, radius=15, color=(255, 0, 0), thickness=-1)
         right = (agent_state.position[0] + zoom, 0, agent_state.position[2])
         right_coords = self.toGrid2(right)
         delta = abs(agent_coords[0] - right_coords[0])
-        x, y = agent_coords
-        # Calculate crop boundaries
+
+    # # Calculate crop boundaries
+    #     topdown_map = cv2.warpAffine(topdown_map, M, (w, h))
+    #     for text, text_position in texts:
+    #         # print(text_position)
+    #         new_text_position = np.dot(M, np.array([text_position[0], text_position[1], 1]))
+    #         nx, ny = int(new_text_position[0]), int(new_text_position[1])
+    #         cv2.putText(topdown_map, text, (nx, ny), font, text_size, (0, 0, 0), text_thickness+1)
         max_x, max_y = topdown_map.shape[1], topdown_map.shape[0]
         x1 = max(0, x - delta)
         x2 = min(max_x, x + delta)
@@ -686,4 +779,21 @@ class DynamicBench:
         
         return zoomed_map
 
+    def get_shortest_path(self, start, end, multi=False):
+
+        if multi:
+            shortest_path = habitat_sim.nav.MultiGoalShortestPath()
+            shortest_path.requested_ends = end
+            shortest_path.requested_start = start
+            if self.annotatedSimulator.sim.pathfinder.find_path(shortest_path):
+                return shortest_path.geodesic_distance
+            print('NO PATH FOUND')
+            return 1000
+        shortest_path = habitat_sim.nav.ShortestPath()
+        shortest_path.requested_start = start
+        shortest_path.requested_end = np.array(end)
+        if self.annotatedSimulator.sim.pathfinder.find_path(shortest_path):
+            return shortest_path.geodesic_distance
+        print('NO PATH FOUND')
+        return 1000
 

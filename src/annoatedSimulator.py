@@ -59,13 +59,15 @@ class AnnotatedSimulator:
         agent_cfg.sensor_specifications = []
         self.fov = fov
         self.sem_res = [240, 320]
+        self.height = 1.4
+        pitch = -0.36
         for sensor in sensors:
-            pitch = -0.4
             sem_cfg = habitat_sim.CameraSensorSpec()
             sem_cfg.uuid = f"semantic_sensor_{sensor}"
             sem_cfg.sensor_type = habitat_sim.SensorType.SEMANTIC
             sem_cfg.resolution = self.sem_res
             sem_cfg.hfov = fov
+            sem_cfg.position = mn.Vector3([0, self.height, 0])
             sem_cfg.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(sem_cfg)
 
@@ -74,6 +76,7 @@ class AnnotatedSimulator:
             rgb_sensor_spec.sensor_type = habitat_sim.SensorType.COLOR
             rgb_sensor_spec.resolution = self.RESOLUTION
             rgb_sensor_spec.hfov = fov            
+            rgb_sensor_spec.position = mn.Vector3([0, self.height, 0])
             rgb_sensor_spec.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(rgb_sensor_spec)
 
@@ -82,6 +85,7 @@ class AnnotatedSimulator:
             depth_sensor_spec.sensor_type = habitat_sim.SensorType.DEPTH
             depth_sensor_spec.resolution = self.RESOLUTION #(self.RESOLUTION[0]//4, self.RESOLUTION[1]//4)
             depth_sensor_spec.hfov = fov            
+            depth_sensor_spec.position = mn.Vector3([0, self.height, 0])
             depth_sensor_spec.orientation = mn.Vector3([pitch, sensor, 0])
             agent_cfg.sensor_specifications.append(depth_sensor_spec)
 
@@ -256,6 +260,8 @@ class AnnotatedSimulator:
             if action == -10:
                 print("DEFAULTING ACTION")
                 return (['forward' , 0.2],)
+            if action == -1:
+                return (['forward', 0],)
             if action <= len(points) and action > 0:
                 mag, theta = points[action-1]
                 return (['rotate', -theta], ['forward', mag],)
@@ -393,20 +399,20 @@ class AnnotatedSimulator:
         for sensor in self.sensors:
             out = {'annotations': [], 'agent_state': agent_state}
             sem_image = observations[f"semantic_sensor_{sensor}"]
+            objects = []
+            # if self.objects_to_annotate == None:
+            #     objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
+            #                                     max_objects=self.num_objects)
+            # else:
+            #     sem_image_counter = Counter(sem_image.flatten())
 
-            if self.objects_to_annotate == None:
-                objects = self.filter_objects(sem_image, agent_state.sensor_states[f'color_sensor_{sensor}'],
-                                                max_objects=self.num_objects)
-            else:
-                sem_image_counter = Counter(sem_image.flatten())
-
-                objects = []
-                for obj in self.objects_to_annotate:
-                    local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
-                                                            agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
-                                                            obj.aabb.center), 3)
-                    if local_coords[2] < 0 and sem_image_counter.get(obj.semantic_id, 0) > 5:
-                        objects.append([obj, None, local_coords])
+            #     objects = []
+            #     for obj in self.objects_to_annotate:
+            #         local_coords = np.round(global_to_local(agent_state.sensor_states[f'color_sensor_{sensor}'].position,
+            #                                                 agent_state.sensor_states[f'color_sensor_{sensor}'].rotation,
+            #                                                 obj.aabb.center), 3)
+            #         if local_coords[2] < 0 and sem_image_counter.get(obj.semantic_id, 0) > 5:
+            #             objects.append([obj, None, local_coords])
                     
             annotated = 0
             for obj, _, local_coords in objects:

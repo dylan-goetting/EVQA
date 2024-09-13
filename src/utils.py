@@ -174,13 +174,14 @@ def depth_to_height1(depth_image, hfov, camera_position, camera_quaternion: quat
     global_height_map = global_points[:, :, 1]
     return global_height_map
 
-
-
 def plot_groupby(df, groupby, var, std=True, title=''):
     # df['group'] = df['itr'] // 50
-
+    if type(groupby) != str:
+        df['group'] = df[groupby].apply(lambda row: ''.join(row.values.astype(str)), axis=1)
+        grouped = df.groupby('group')[var]
     # Group by the new 'group' column
-    grouped = df.groupby(groupby)[var]
+    else:
+        grouped = df.groupby(groupby)[var]
 
     # Calculate mean and standard deviation for each group
     mean_accuracy = grouped.mean()
@@ -278,15 +279,13 @@ def plot_results(df, run_name):
     plt.title('Weighted Accuracy for x, y, z and Overall')
     plt.show()
 
-def gif(path):
+def gif(path, multi=True):
     fig = plt.figure()
     ims = []
 
-    for i in range(len(listdir(path))-1):
+    for i in range(min(len(listdir(path))-1, 80)):
         try:
-            ndx=0
-            if len(listdir(f"{path}/step{i}")) > 5:
-                ndx=1
+            ndx=1 if multi else 0
                 
             np_img_i = cv2.imread(f"{path}/step{i}/image{ndx}.png")
             np_img_i = cv2.cvtColor(np_img_i, cv2.COLOR_BGR2RGB)
