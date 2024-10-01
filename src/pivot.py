@@ -1,4 +1,5 @@
 import ast
+import logging
 from cv2 import log
 import numpy as np
 
@@ -51,7 +52,7 @@ class ActionDistribution2D:
 
 
 class PIVOT:
-
+    
     def __init__(self, vlm: GeminiModel, fov, image_dim):
         self.image_width = image_dim[1]
         self.image_height = image_dim[0]
@@ -122,6 +123,7 @@ class PIVOT:
                     eval_resp = ast.literal_eval(response[response.rindex('{'):response.rindex('}')+1])
                     all_points += eval_resp['points']
                 except Exception as e:
+                    logging.error(f'pivot error parsing', e)
                     print(e)
 
             all_points = set(all_points)
@@ -145,16 +147,16 @@ class PIVOT:
 
         mag = np.sqrt(x**2 + z**2)
         theta = np.arctan2(x, z)
-        return (['rotate', -theta], ['forward', min(mag, 3)],)
+        return (['rotate', -theta], ['forward', min(mag, 2.3)],)
 
     def annotate_on_image(self, rgb_image, sampled_actions):
-
+        scale_factor = rgb_image.shape[0]/1080
         annotated_image = rgb_image.copy()
         action_name = 1
         font = cv2.FONT_HERSHEY_SIMPLEX
         text_color = (0, 0, 0) 
-        text_size = 2
-        text_thickness = 2
+        text_size = 2*scale_factor
+        text_thickness = math.ceil(2*scale_factor)
         annotated = []
         for end_px in sampled_actions:
 
@@ -165,15 +167,15 @@ class PIVOT:
                 dist = np.linalg.norm(np.array(end_px) - np.array(annotated_px))
                 min_dist = min(min_dist, dist)
 
-            if min_dist > 100 and 0.05 * rgb_image.shape[1] <= end_px[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_px[1] <= 0.95 * rgb_image.shape[0]:
-                cv2.arrowedLine(annotated_image, tuple(self.start_pxl), (int(end_px[0]), int(end_px[1])), (255, 0, 0), 5, tipLength=0.)
+            if min_dist > int(100*scale_factor) and 0.05 * rgb_image.shape[1] <= end_px[0] <= 0.95 * rgb_image.shape[1] and 0.05 * rgb_image.shape[0] <= end_px[1] <= 0.95 * rgb_image.shape[0]:
+                cv2.arrowedLine(annotated_image, tuple(self.start_pxl), (int(end_px[0]), int(end_px[1])), (255, 0, 0), math.ceil(5*scale_factor), tipLength=0.)
                 text = str(action_name) 
                 (text_width, text_height), _ = cv2.getTextSize(text, font, text_size, text_thickness)
                 circle_center =  (int(end_px[0]), int(end_px[1]))
-                circle_radius = max(text_width, text_height) // 2 + 15
+                circle_radius = max(text_width, text_height) // 2 + math.ceil(15*scale_factor)
 
                 cv2.circle(annotated_image, circle_center, circle_radius, (255, 255, 255), -1)
-                cv2.circle(annotated_image, circle_center, circle_radius, (255, 0, 0), 2)
+                cv2.circle(annotated_image, circle_center, circle_radius, (255, 0, 0), math.ceil(2*scale_factor))
                 text_position = (circle_center[0] - text_width // 2, circle_center[1] + text_height // 2)
                 cv2.putText(annotated_image, text, text_position, font, text_size, text_color, text_thickness)
                 annotated.append(end_px)

@@ -1,5 +1,6 @@
 import base64
 from collections import Counter
+import logging
 from math import e
 import random
 import socket
@@ -26,6 +27,7 @@ import google.generativeai as genai
 from googleapiclient.errors import HttpError
 from openai import OpenAI
 import requests
+from transformers import AutoImageProcessor, Mask2FormerForUniversalSegmentation
 
 class VLM:
     """
@@ -178,18 +180,18 @@ class GeminiModel(VLM):
     
     def __init__(self, model="gemini-1.5-flash", sys_instruction=None):
         self.name = model
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+        genai.configure(api_key='')
 
         # Create the model
         self.generation_config = {
         "temperature": 1,
         "top_p": 0.8,
-        "top_k": 64,
+        "top_k": 40,
         "max_output_tokens": 500,
         "response_mime_type": "text/plain",
         }
         self.spend = 0
-        if self.name == 'gemini-1.5-flash':
+        if 'flash' in self.name:
             self.inp_cost = 0.075/1000000
             self.out_cost = 0.3/1000000
         else:
@@ -248,7 +250,6 @@ class GeminiModel(VLM):
             self.model.rewind()
 
     def reset(self):
-
         del self.session
         self.session = self.model.start_chat(history=[])
 
@@ -264,6 +265,7 @@ class GeminiModel(VLM):
             print(f'{self.name} finished inference, took {np.round(finish, 2)} seconds, speed of {np.round(perf["tokens_generated"]/finish, 2)} t/s')
             resp = response.text
         except Exception as e:  
+            logging.error(f"GEMINI API ERROR: {e}")
             resp = f"GEMINI API ERROR: {e}"
             print(resp)
             perf = {'tokens_generated': 0, 'duration': 1, 'input_tokens': 0}
@@ -320,16 +322,14 @@ class GPTModel(VLM) :
         self.session_history = []
         self.base_message = [{'role': 'system', 'content': sys_instruction}]
 
-    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None, logprobs=0):
-        def encode_image_from_rgb(rgb_array):
-            # Convert the RGB array to a format that can be encoded, such as PNG
-            _, buffer = cv2.imencode('.png', cv2.cvtColor(rgb_array, cv2.COLOR_RGB2BGR))
-            return base64.b64encode(buffer).decode('utf-8')
-        def encode_image(rgb_array):
+    def call_chat(self, history, images, text_prompt, add_timesteps_prompt=True, step=None, logprobs=0, ex_type=None):
+
+        def encode_image(rgb_array, quality=85):
             im = Image.fromarray(rgb_array[:, :, 0:3], mode='RGB')
-            im.save('logs/temp.png', overwrite=True)
-            with open('logs/temp.png', "rb") as image_file:
+            im.save('logs/temp.jpg', format='JPEG', quality=quality)  # Save as JPEG with the given quality
+            with open('logs/temp.jpg', "rb") as image_file:
                 return base64.b64encode(image_file.read()).decode('utf-8')
+
         message = {
             "role": "user",
             "content": [{'type': 'text', 'text': text_prompt}]
@@ -363,8 +363,17 @@ class GPTModel(VLM) :
                 'Authorization': f'Bearer {self.api_key}'
             }
             # r = self.client.chat.completions.create(model=self.name, messages=self.base_message + [message], max_tokens=500)
-            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload).json()
+            r = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
             # pdb.set_trace()
+            # if error log it
+            if r.status_code != 200:
+                logging.error(f"Request failed with status code: {r.status_code}")
+                logging.error(f"Response: {r.text}")
+            else:
+                logging.info(f"Request successful with status code: {r.status_code}")
+                logging.info(f"Response: {r.text}")
+
+            r = r.json()
             self.spend += r['usage']['prompt_tokens']*self.inp_cost + r['usage']['completion_tokens']*self.out_cost
             self.get_spend()
             print(r['usage'])
@@ -385,9 +394,10 @@ class GPTModel(VLM) :
                 return resp, {"tokens_generated": r['usage']['completion_tokens'], "duration": finish, "input_tokens": r['usage']['prompt_tokens'], "logprobs": r['choices'][0]['logprobs']['content'][0]['top_logprobs']}
             return resp, {"tokens_generated": r['usage']['completion_tokens'], "duration": finish, "input_tokens": r['usage']['prompt_tokens']}
                     
-        except Exception as e:
-            print("OPENAI API ERROR")
-            print(e)
+        except ex_type as e:
+            logging.error("OPENAI API ERROR")
+            logging.error(e)
+
             return "ERROR", {"tokens_generated": 0, "duration": 1, "input_tokens": 0}
     
     def call(self, images, text_prompt: str, logprobs=0):
@@ -405,3 +415,56 @@ class GPTModel(VLM) :
     def reset(self):
         self.session_history = []
 
+from transformers import pipeline
+import torch
+
+class DepthEstimator:
+
+    def __init__(self):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        checkpoint = "intel/ZoeD-M12-NK"
+        self.pipe = pipeline("depth-estimation", model=checkpoint, device=device)
+
+    def call(self, images):
+        out = []
+        for im in images:
+            im = Image.fromarray(im[:, :, 0:3])
+            predictions = self.pipe(im)['predicted_depth']
+
+            out.append(predictions)
+        return out
+    
+        # return self.pipe(images)
+
+class FloorMask:
+
+    def __init__(self):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.processor = AutoImageProcessor.from_pretrained("facebook/mask2former-swin-small-ade-semantic")
+        self.model = Mask2FormerForUniversalSegmentation.from_pretrained("facebook/mask2former-swin-small-ade-semantic").to(self.device)
+
+        # Get class names from the model configuration
+        id2label = self.model.config.id2label
+        self.image_count = 0
+        # Find the class IDs for 'floor' or 'ground'
+        self.floor_class_ids = [id for id, label in id2label.items() if 'floor' in label.lower() or 'rug' in label.lower()]
+
+    def call(self, im):
+        image = Image.fromarray(im[:, :, 0:3])
+        inputs = self.processor(images=image, return_tensors="pt").to(self.device)  # Move inputs to GPU
+
+        # Run the model 
+        with torch.no_grad():
+            with torch.cuda.amp.autocast():
+                outputs = self.model(**inputs)
+
+            # Post-process the outputs to get the semantic segmentation map
+        predicted_semantic_map = self.processor.post_process_semantic_segmentation(
+            outputs, target_sizes=[image.size[::-1]])[0].cpu().numpy()  # Move back to CPU for numpy conversion
+
+        floor_mask = np.isin(predicted_semantic_map, self.floor_class_ids)
+        if self.image_count % 5 == 0:
+            torch.cuda.empty_cache()
+        self.image_count += 1
+        return floor_mask
+    

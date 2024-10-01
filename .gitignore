@@ -1,10 +1,11 @@
 llava-v1.6-mistral-7b-hf/
 .idea/
 __pycache__/
-scenes/
+datasets/
 logs/
 .vscode/
-annotated_datasets/
-habitat-lab/
 testing/
+wandb/
+habitat-lab/
+parallel/
 .env

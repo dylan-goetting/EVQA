@@ -4,14 +4,25 @@ import yaml
 import argparse
 import os
 import sys
-sys.path.insert(0, '..')
+sys.path.insert(0, '/home/dylangoetting/SpatialBenchmark')
 # print("Current Working Directory:", os.getcwd())
 from src.annoatedSimulator import AnnotatedSimulator
 import pickle
+from PIL import Image
+from src.vlm import *
 
 
 if __name__ == '__main__':
     
+    test = FloorMask()
+    im = np.array(Image.open('logs/floortest_103.png'))
+    for i in range(100):
+        mask = test.call(im)
+        # print(mask)
+        print(mask.shape)
+        print('---')
+        time.sleep(0.2)
+    exit(0)
     # use argparse to add the args "num_objects, num_samples, num_iterations, headless, offline, "
     parser = argparse.ArgumentParser(description="Create a dataset from sumulator")
     parser.add_argument('--scene_ids', type=int, nargs='*', help='list of scene IDs', default=[873])

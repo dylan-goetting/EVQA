@@ -1,21 +1,17 @@
-from itertools import zip_longest
 from os import listdir
-import os
 import pdb
-from threading import local
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import quaternion
 import matplotlib.pyplot as plt
 import seaborn as sns
-from IPython.display import HTML
 import matplotlib.animation as animation
-from torch import mul
+
 import numpy as np
 import cv2
 from scipy.spatial.transform import Rotation as R
-
+import math
 
 def local_to_global(p, q, local_point):
     local_rotated = quaternion.rotate_vectors(q, local_point, axis=-1)
@@ -68,33 +64,73 @@ def annotate_image_offline(annotation, image, fov):
 
     return image
 
+def bucket_normalized_timesteps(trials, num_buckets=None):
+    """
+    Normalize timesteps across multiple trials, bucket them, and compute the mean exploration percentage
+    for each bucket.
+
+    Parameters:
+    trials (list of lists): Each list contains the exploration percentage for a trial, with variable timesteps.
+    num_buckets (int): The number of buckets to use for normalized timesteps.
+
+    Returns:
+    np.ndarray: A 1D array containing the average exploration percentage for each bucket.
+    """
+    # Initialize list to store the exploration percentages for each bucket
+    if num_buckets is None:
+        num_buckets = int(sum([len(trial) for trial in trials])*3/(4*len(trials)))
+    bucket_sums = np.zeros(num_buckets)
+    bucket_counts = np.zeros(num_buckets)
+    
+    # Process each trial
+    for trial in trials:
+        num_timesteps = len(trial)
+        # Create normalized timesteps (0 to 1)
+        normalized_timesteps = np.linspace(0, 1, num_timesteps)
+        # Determine the bucket index for each normalized timestep
+        bucket_indices = np.floor(normalized_timesteps * num_buckets).astype(int)
+        # Ensure the last bucket index does not exceed num_buckets-1
+        bucket_indices = np.clip(bucket_indices, 0, num_buckets - 1)
+        
+        # Accumulate the exploration percentages in the corresponding buckets
+        for i, bucket_idx in enumerate(bucket_indices):
+            bucket_sums[bucket_idx] += trial[i]
+            bucket_counts[bucket_idx] += 1
+    
+    # Compute the mean exploration percentage for each bucket
+    bucket_means = np.divide(bucket_sums, bucket_counts, out=np.zeros_like(bucket_sums), where=bucket_counts > 0)
+
+    return bucket_means
 
 def put_text_on_image(image, text, location, font=cv2.FONT_HERSHEY_SIMPLEX, text_size=2.7, background_color=(255, 255, 255), text_color=(0, 0, 0), text_thickness=3, highlight=True):
-    font_thickness = int(text_thickness)
+    font_thickness = math.ceil(text_thickness)
+    scale_factor = image.shape[0] / 1080
+    font_thickness = math.ceil(scale_factor * font_thickness)
+    text_size = scale_factor * text_size
     assert location in ['top_left', 'top_right', 'bottom_left', 'bottom_right', 'top_center', 'center'], "Location must be one of 'top_left', 'top_right', 'bottom_left', 'bottom_right', 'top_center', 'center'"
     
     # Get image dimensions
     image_height, image_width = image.shape[:2]
-    
     # Get text size
     text_shape, _ = cv2.getTextSize(text, font, text_size, font_thickness)
     
     # Calculate the text position based on the location
+    offset = math.ceil(10*scale_factor)
     if location == 'top_left':
-        text_x = 10
-        text_y = text_shape[1] + 10
+        text_x = offset
+        text_y = text_shape[1] + offset
     elif location == 'top_right':
-        text_x = image_width - text_shape[0] - 10
-        text_y = text_shape[1] + 10
+        text_x = image_width - text_shape[0] - offset
+        text_y = text_shape[1] + offset
     elif location == 'bottom_left':
-        text_x = 10
-        text_y = image_height - 10
+        text_x = offset
+        text_y = image_height - offset
     elif location == 'bottom_right':
-        text_x = image_width - text_shape[0] - 10
-        text_y = image_height - 10
+        text_x = image_width - text_shape[0] - offset
+        text_y = image_height - offset
     elif location == 'top_center':
         text_x = (image_width - text_shape[0]) // 2
-        text_y = text_shape[1] + 10
+        text_y = text_shape[1] + offset
     elif location == 'center':
         text_x = (image_width - text_shape[0]) // 2
         text_y = (image_height + text_shape[1]) // 2
@@ -102,11 +138,10 @@ def put_text_on_image(image, text, location, font=cv2.FONT_HERSHEY_SIMPLEX, text
     # Draw a background rectangle for the text
 
     if highlight:
-        cv2.rectangle(image, (text_x - 5, text_y - text_shape[1] - 10), (text_x + text_shape[0] + 5, text_y + 10), background_color, -1)
+        cv2.rectangle(image, (text_x - offset//2, text_y - text_shape[1] - offset), (text_x + text_shape[0] + offset//2, text_y + offset), background_color, -1)
     
     # Put the text on the image
     cv2.putText(image, text, (text_x, text_y), font, float(text_size), text_color, font_thickness)
-    
     return image
 
 
